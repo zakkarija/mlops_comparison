@@ -1,0 +1,33 @@
+task EvaluateModel {
+
+    define input data Timestamps2;
+    define input data Features;
+    define input data XTest;
+    define input data YTest;
+    define input data XPad;
+    define input data YPad;
+    define input data OutputFolder;
+    define input data model_path;
+
+    define output data OutputFolder;
+
+    define metric IDEKO_accuracy {
+        semanticType ML_Accuracy;
+        kind single-value;
+        type double;
+    }
+
+    define metric IDEKO_loss {
+        kind single-value;
+        type double;
+    }
+
+    define metric IDEKO_recall {
+        semanticType ML_Recall;
+        kind single-value;
+        type double;
+    }
+
+    implementation "binary/EvaluateModel/task.py";
+    dependency "binary/**";
+}

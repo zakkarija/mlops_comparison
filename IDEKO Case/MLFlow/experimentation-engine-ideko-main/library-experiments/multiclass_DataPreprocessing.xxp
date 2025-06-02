@@ -1,0 +1,44 @@
+workflow multiclass_DataPreprocessing {
+
+  // Task CONNECTIONS
+  START -> AddPadding -> SplitData -> END;
+
+  task SplitData {
+    implementation "multiclass.SplitData";
+  }
+
+  task AddPadding {
+    implementation "multiclass.AddPadding";
+  }
+
+  define input data X2;
+  define input data Y;
+  define input data IndicatorList;
+  X2 --> AddPadding.X42;
+  Y --> AddPadding.Y;
+  IndicatorList --> AddPadding.IndicatorList;
+
+  AddPadding.XPad --> SplitData.XPad;
+  AddPadding.YPad --> SplitData.YPad;
+
+  define output data Timestamps42;
+  define output data Features;
+  define output data n_classes;
+  define output data XTrain;
+  define output data XTest;
+  define output data YTrain;
+  define output data YTest;
+  define output data XPad;
+  define output data YPad;
+
+  SplitData.Timestamps41 --> Timestamps42;
+  SplitData.Features --> Features;
+  SplitData.n_classes --> n_classes;
+  SplitData.XTrain --> XTrain;
+  SplitData.XTest --> XTest;
+  SplitData.YTrain --> YTrain;
+  SplitData.YTest --> YTest;
+  SplitData.XPad --> XPad;
+  SplitData.YPad --> YPad;
+
+}

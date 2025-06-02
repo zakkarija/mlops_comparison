@@ -1,0 +1,163 @@
+package multiclass;
+
+workflow main_multiclass {
+
+  // Task CONNECTIONS
+  START -> ReadData -> PrepareData -> TrainModel -> EvaluateModel -> ValidateModel -> END;
+
+  task TrainModel;
+
+  task ReadData {
+    implementation "multiclass.ReadData";
+  }
+
+  task EvaluateModel {
+    implementation "multiclass.EvaluateModel";
+  }
+
+  task ValidateModel {
+    implementation "multiclass.ValidateModel";
+  }
+
+  task PrepareData {
+    subworkflow "multiclass_DataPreprocessing";
+  }
+
+  // DATA
+  define input data ExternalDataFile;
+
+  // DATA CONNECTIONS
+  ExternalDataFile --> ReadData.FileToRead;
+
+  configure data ExternalDataFile {
+    path "training/**";
+  }
+
+  // DATA VALIDATION
+  define input data ValidationDataFile;
+
+  // DATA CONNECTIONS
+  ValidationDataFile --> ValidateModel.FileToValidate;
+
+  configure data ValidationDataFile {
+    path "validation/**";
+  }
+
+  define output data TrainedModelFolder;
+
+  TrainModel.OutputFolder --> TrainedModelFolder;
+
+  configure data TrainedModelFolder {
+    path "output/trained_model/**";
+    type "generated-ML-model";
+  }
+
+    ReadData.X41 --> PrepareData.X2;
+    ReadData.Y --> PrepareData.Y;
+    ReadData.IndicatorList --> PrepareData.IndicatorList;
+
+    PrepareData.Timestamps42 --> TrainModel.Timestamps;
+    PrepareData.Features --> TrainModel.Features;
+    PrepareData.n_classes --> TrainModel.n_classes;
+    PrepareData.XTrain --> TrainModel.XTrain;
+    PrepareData.XTest --> TrainModel.XTest;
+    PrepareData.YTrain --> TrainModel.YTrain;
+    PrepareData.YTest --> TrainModel.YTest;
+    PrepareData.XPad --> TrainModel.XPad;
+    PrepareData.YPad --> TrainModel.YPad;
+
+    TrainModel.OutputFolder --> EvaluateModel.OutputFolder;
+    TrainModel.XTest --> EvaluateModel.XTest;
+    TrainModel.YTest --> EvaluateModel.YTest;
+    TrainModel.XPad --> EvaluateModel.XPad;
+    TrainModel.YPad --> EvaluateModel.YPad;
+    TrainModel.Timestamps --> EvaluateModel.Timestamps2;
+    TrainModel.Features --> EvaluateModel.Features;
+    TrainModel.n_classes --> EvaluateModel.n_classes;
+
+    EvaluateModel.OutputFolder --> ValidateModel.OutputFolder;
+}
+
+workflow TrainModelNN_M from main_multiclass {
+  task TrainModel {
+    implementation "multiclass.TrainModelNN";
+  }
+}
+
+workflow TrainModelRNN_M from main_multiclass {
+  task TrainModel {
+    implementation "multiclass.TrainModelRNN";
+  }
+}
+
+workflow TrainModelCNN_M from main_multiclass {
+  task TrainModel {
+    implementation "multiclass.TrainModelCNN";
+  }
+}
+
+experiment EXP {
+  intent FindBestClassifier;
+  control {
+    //Automated
+    // S1 -> S2 -> S3;
+    START -> S1 -> S2 -> S3 -> END;
+    // START -> S1 -> END;
+  }
+
+  space S1 of TrainModelNN_M {
+    strategy gridsearch;
+    // param epochs_vp = range(2, 4);
+    param epochs_vp = enum(2);
+    param batch_size_vp = enum(64);
+    param units_1_vp = enum(100);
+    param units_2_vp = enum(100);
+    param units_3_vp = enum(100);
+    param activation_function_vp = enum("relu");
+    task TrainModel {
+      param epochs = epochs_vp;
+      param batch_size = batch_size_vp;
+      param units_1 = units_1_vp;
+      param units_2 = units_2_vp;
+      param units_3 = units_3_vp;
+      param activation_function = activation_function_vp;
+    }
+  }
+
+  space S2 of TrainModelRNN_M {
+    strategy gridsearch;
+    param epochs_vp = enum(2);
+    param batch_size_vp = enum(32);
+    param hidden_units_1_vp = enum(64);
+    param hidden_units_2_vp = enum(64);
+    param activation_function_vp = enum("tanh");
+    task TrainModel {
+      param epochs = epochs_vp;
+      param batch_size = batch_size_vp;
+      param hidden_units_1 = hidden_units_1_vp;
+      param hidden_units_2 = hidden_units_2_vp;
+      param activation_function = activation_function_vp;
+    }
+  }
+
+    space S3 of TrainModelCNN_M {
+    strategy gridsearch;
+    param epochs_vp = enum(2);
+    param batch_size_vp = enum(32);
+    param filters_1_vp = enum(64);
+    param filters_2_vp = enum(64);
+    param kernel_size_vp = enum(3);
+    param pool_size_vp = enum(2);
+    param activation_function_vp = enum("relu");
+    task TrainModel {
+      param epochs = epochs_vp;
+      param batch_size = batch_size_vp;
+      param filters_1 = filters_1_vp;
+      param filters_2 = filters_2_vp;
+      param kernel_size = kernel_size_vp;
+      param pool_size = pool_size_vp;
+      param activation_function = activation_function_vp;
+    }
+  }
+
+}

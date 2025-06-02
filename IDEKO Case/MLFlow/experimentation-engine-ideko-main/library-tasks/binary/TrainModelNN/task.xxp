@@ -1,0 +1,59 @@
+task TrainModelNN_B {
+
+    define input data Timestamps;
+    define input data Features;
+    define input data XTrain;
+    define input data YTrain;
+    define input data XTest;
+    define input data YTest;
+    define input data XPad;
+    define input data YPad;
+
+    define output data OutputFolder;
+    define output data XTest;
+    define output data YTest;
+    define output data XPad;
+    define output data YPad;
+    define output data Timestamps;
+    define output data Features;
+    define output data model_path;
+
+    define param epochs {
+        type Integer;
+        default 90;
+        range (1,200);
+    }
+
+    define param batch_size {
+        type Integer;
+        default 64;
+        range (8,256);
+    }
+
+    define param units_1 {
+        type Integer;
+        default 100;
+        range (100, 256);
+    }
+
+    define param units_2 {
+        type Integer;
+        default 100;
+        range (100, 256);
+    }
+
+    define param units_3 {
+        type Integer;
+        default 100;
+        range (100, 256);
+    }
+
+    define param activation_function {
+        type String;
+        default "relu";
+        enum ("relu", "relu1");
+    }
+
+    implementation "binary/TrainModelNN/task.py";
+    dependency "binary/**";
+}

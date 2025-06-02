@@ -1,0 +1,18 @@
+task UserIteration {
+
+    type interactive;
+    // for interactive tasks, Python 3.6.9 is used and cannot be changed
+
+    define input data FileToValidate;
+
+    implementation "binary/UserIteration/task.py";
+    
+    venv "binary/UserIteration/requirements.txt";
+
+    define metric human_in_the_loop_value {
+        kind single-value;
+        type string;
+    }
+
+    dependency "binary/human_in_the_loop/**";
+}
