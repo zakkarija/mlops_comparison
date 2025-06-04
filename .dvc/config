@@ -1,0 +1,4 @@
+[core]
+    remote = s3dvc
+['remote "s3dvc"']
+    url = s3://mlops-comparison/ideko_data/
