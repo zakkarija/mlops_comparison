@@ -1,8 +1,0 @@
-task ValidateModel {
-
-    define input data FileToValidate;
-    define input data OutputFolder;
-
-    implementation "binary/ValidateModel/task.py";
-    dependency "binary/**";
-}

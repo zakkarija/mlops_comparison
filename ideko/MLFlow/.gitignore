@@ -1,0 +1,11 @@
+# IDEA
+*.xml
+*.iml
+
+# Datasets
+*.csv
+*.zip
+
+# Models
+*.pkl
+*.ubj

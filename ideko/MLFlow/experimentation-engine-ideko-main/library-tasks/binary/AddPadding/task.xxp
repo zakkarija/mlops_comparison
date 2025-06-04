@@ -1,0 +1,12 @@
+task AddPadding {
+
+    define input data X42;
+    define input data Y;
+    define input data IndicatorList;
+
+    define output data XPad;
+    define output data YPad;
+
+    implementation "binary/AddPadding/task.py";
+    dependency "binary/**";
+}

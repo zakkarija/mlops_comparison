@@ -1,0 +1,65 @@
+task TrainModelCNN_B {
+
+    define input data Timestamps;
+    define input data Features;
+    define input data XTrain;
+    define input data YTrain;
+    define input data XTest;
+    define input data YTest;
+    define input data XPad;
+    define input data YPad;
+
+    define output data OutputFolder;
+    define output data XTest;
+    define output data YTest;
+    define output data XPad;
+    define output data YPad;
+    define output data Timestamps;
+    define output data Features;
+    define output data model_path;
+
+    define param epochs {
+        type Integer;
+        default 90;
+        range (1,200);
+    }
+
+    define param batch_size {
+        type Integer;
+        default 64;
+        range (8,256);
+    }
+
+    define param filters_1 {
+        type Integer;
+        default 64;
+        range (32, 256);
+    }
+
+    define param filters_2 {
+        type Integer;
+        default 64;
+        range (32, 256);
+    }
+
+    define param kernel_size {
+        type Integer;
+        default 3;
+        range (3, 7);
+    }
+
+    define param pool_size {
+        type Integer;
+        default 2;
+        range (2, 3);
+    }
+
+    define param activation_function {
+        type String;
+        default "relu";
+        enum ("relu", "relu1");
+    }
+
+    implementation "binary/TrainModelCNN/task.py";
+    dependency "binary/**";
+}

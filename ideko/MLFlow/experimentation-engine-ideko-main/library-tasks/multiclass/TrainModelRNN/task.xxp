@@ -1,0 +1,55 @@
+task TrainModelRNN_M {
+
+    define input data Timestamps;
+    define input data Features;
+    define input data n_classes;
+    define input data XTrain;
+    define input data YTrain;
+    define input data XTest;
+    define input data YTest;
+    define input data XPad;
+    define input data YPad;
+
+    define output data OutputFolder;
+    define output data XTest;
+    define output data YTest;
+    define output data XPad;
+    define output data YPad;
+    define output data Timestamps;
+    define output data Features;
+    define output data n_classes;
+    define output data model_path;
+
+    define param epochs {
+        type Integer;
+        default 90;
+        range (1,200);
+    }
+
+    define param batch_size {
+        type Integer;
+        default 64;
+        range (8,256);
+    }
+
+        define param hidden_units_1 {
+        type Integer;
+        default 64;
+        range (64, 256);
+    }
+
+    define param hidden_units_2 {
+        type Integer;
+        default 64;
+        range (64, 256);
+    }
+
+    define param activation_function {
+        type String;
+        default "tanh";
+        enum ("tanh", "tanh1");
+    }
+
+    implementation "multiclass/TrainModelRNN/task.py";
+    dependency "multiclass/**";
+}
