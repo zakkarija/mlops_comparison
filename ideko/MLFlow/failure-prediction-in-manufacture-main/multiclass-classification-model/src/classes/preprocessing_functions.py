@@ -16,9 +16,46 @@ from sklearn.preprocessing import LabelEncoder
 
 from helpers.logger import LoggerHelper, logging
 
+import re
+from datetime import datetime
+
 # Load logger
 LoggerHelper.init_logger()
 logger = logging.getLogger(__name__)
+
+
+def build_label_table(data_path, machine_id: str = "M1"):
+    """
+    Walk the same folder/zip layout you already parse in `read_data`
+    and return a DataFrame with four columns:
+        machine_id | cycle_id | event_timestamp | label
+    The timestamp is parsed from the file-name pattern
+    ‘YYYY_MM_DD_HH_MM_SS’ that exists in every *.csv inside the zip.
+    """
+    labels = {
+        "not_anomalous": "not anomalous",
+        "mechanical_anomalies": "mechanical anomaly",
+        "electrical_anomalies": "electrical anomaly",
+    }
+
+    rows, cycle_id = [], 0
+    for folder, lbl in labels.items():
+        folder_path = os.path.join(data_path, folder)
+        for day in os.listdir(folder_path):
+            for file in os.listdir(os.path.join(folder_path, day)):
+                m = re.search(r"(\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})", file)
+                # Fallback to 'now' if filename lacks datetime
+                ts = datetime.strptime(m.group(1), "%Y_%m_%d_%H_%M_%S") if m else datetime.utcnow()
+                rows.append(
+                    dict(
+                        machine_id=machine_id,
+                        cycle_id=cycle_id,
+                        event_timestamp=pd.Timestamp(ts, tz="UTC"),
+                        label=lbl,
+                    )
+                )
+                cycle_id += 1
+    return pd.DataFrame(rows)
 
 def read_data(data_path, indicator_list):
     ''' Function for reading and loading data.

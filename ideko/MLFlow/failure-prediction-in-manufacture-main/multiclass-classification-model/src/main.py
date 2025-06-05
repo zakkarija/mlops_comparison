@@ -12,6 +12,8 @@ import numpy as np
 import pandas as pd
 from classes import preprocessing_functions
 from classes.multiclass_models import NeuralNetwork, ConvolutionalNeuralNetwork, RecurrentNeuralNetwork, LongShortTermMemory
+from feast import FeatureStore
+
 
 # Load logger & config
 LoggerHelper.init_logger()
@@ -49,6 +51,30 @@ logger.info("Summary of timeseries length %s" %pd.Series([len(x) for x in X]).de
 X_pad = preprocessing_functions.add_padding(X, indicator_list)
 
 Y_encoded = preprocessing_functions.encode_response_variable(Y)
+
+# --------------------------------
+# FEAST: build label table & pull aggregates
+# --------------------------------
+label_df = preprocessing_functions.build_label_table(data_path)
+
+agg_feature_list = [
+    "current_stats:current_mean_3s",
+    "current_stats:current_std_3s",
+    "current_stats:current_max_0_5s",
+    "looseness:looseness_mean",
+    "looseness:looseness_p95",
+]
+
+agg_df = fs.get_historical_features(
+    entity_df=label_df[["machine_id", "cycle_id", "event_timestamp"]],
+    features=agg_feature_list,
+).to_df()
+
+logger.info("Aggregates pulled from Feast shape %s", agg_df.shape)
+# (Optional) persist for quick inspection
+agg_df.to_csv(os.path.join(output_path, "feast_aggregates.csv"), index=False)
+# --------------------------------
+
 
 logger.info("SHAPE X (%d, %d, %d)" %(np.shape(X_pad)))
 
