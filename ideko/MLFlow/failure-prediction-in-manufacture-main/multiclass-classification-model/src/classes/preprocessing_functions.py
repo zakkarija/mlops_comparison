@@ -210,6 +210,39 @@ def plot_model_history(history, output_path):
     path_plot = os.path.join(output_path, "model_history")
     plt.savefig(path_plot, dpi = 120)
 
+def prepare_feast_features(feast_df, feature_columns):
+    ''' Function to prepare statistical features from Feast for model training.
+
+    Parameters (input):
+        feast_df (DataFrame): DataFrame containing Feast features
+        feature_columns (list): List of feature column names to extract
+
+    Returns:
+        X: Feature matrix ready for training
+        y: Encoded labels
+    '''
+
+    logger.info("prepare_feast_features(): Preparing statistical features from Feast")
+
+    # Extract feature matrix
+    X = feast_df[feature_columns].values
+
+    # Extract labels and encode them
+    if 'label' in feast_df.columns:
+        y_encoded = encode_response_variable(feast_df['label'].values)
+    elif 'anomaly_class' in feast_df.columns:
+        # Convert numeric labels to text labels for encoding
+        label_map = {0: 'not anomalous', 1: 'mechanical anomaly', 2: 'electrical anomaly'}
+        text_labels = [label_map[cls] for cls in feast_df['anomaly_class'].values]
+        y_encoded = encode_response_variable(text_labels)
+    else:
+        raise ValueError("No label column found in Feast features")
+
+    logger.info("prepare_feast_features(): Feature matrix shape: %s" % str(X.shape))
+    logger.info("prepare_feast_features(): Labels shape: %s" % str(y_encoded.shape))
+
+    return X, y_encoded
+
 def load_model(model_path):
     ''' Function to load the model that is stored in the path model_path
 

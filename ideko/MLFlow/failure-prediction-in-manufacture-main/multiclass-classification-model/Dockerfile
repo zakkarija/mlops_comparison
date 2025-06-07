@@ -1,8 +1,13 @@
-FROM python:3.10.14
- 
-COPY requirements.txt /app/requirements.txt
-RUN pip3 install -r /app/requirements.txt
+FROM python:3.10-slim
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
 COPY src /app/
-WORKDIR /app/
- 
-CMD ["python", "./main.py" ]
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+RUN mkdir -p feast_demo/feature_repo/data/offline
+
+CMD ["bash", "-c", "bash /app/entrypoint.sh"]

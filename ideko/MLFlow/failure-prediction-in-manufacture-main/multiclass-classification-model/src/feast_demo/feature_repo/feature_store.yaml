@@ -1,8 +1,9 @@
-project: feast_repo
-registry: data/registry.db
+project: ideko_local
 provider: local
+entity_key_serialization_version: 2     # << recommended
 offline_store:
-    type: file
+  type: file
 online_store:
-    type: sqlite
-    path: data/online_store.db
+  type: sqlite
+  path: data/online_store.db
+registry: data/feast_registry.db

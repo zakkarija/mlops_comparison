@@ -1,11 +1,62 @@
-# IDEA
-*.xml
+# ─── Python bytecode and caches ─────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ─── Virtual environments ───────────────────────────────────
+venv/
+.venv/
+.env/
+.envs/
+
+# ─── IDE ──────────────────────────────────────────
+# PyCharm
+.idea/
 *.iml
 
-# Datasets
+# VS Code
+.vscode/
+
+# ─── DVC ────────────────────────────────────────────────────
+# DVC metadata and cache directory
+.dvc/
+# DVC “.dvc” files (metafiles for added data)
+*.dvc
+# lockfile for pipelines
+dvc.lock
+
+# ─── Feast ──────────────────────────────────────────────────
+# Feast’s default local sqlite stores (use a real DB in prod instead)
+offline.db
+registry.db
+*.parquet
+
+# ─── Data artifacts ─────────────────────────────────────────
+# Raw CSVs/ZIPs tracked by DVC should not live in Git
 *.csv
 *.zip
 
-# Models
+# ─── Model artifacts ────────────────────────────────────────
+# Generic model dirs and files (use model registry instead)
+models/
+*.h5
+*.hdf5
 *.pkl
+*.joblib
+*.onnx
 *.ubj
+
+# Keras cache & metadata
+.keras/
+*.keras
+keras_metadata.pb
+.model_metadata
+
+# ─── Logs & reports ─────────────────────────────────────────
+logs/
+*.log
+reports/
+
+# ─── OS-specific ────────────────────────────────────────────
+.DS_Store
+Thumbs.db

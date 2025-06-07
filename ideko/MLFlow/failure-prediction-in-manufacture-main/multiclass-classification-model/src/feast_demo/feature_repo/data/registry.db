@@ -1,1 +1,39 @@
-1"$8d3a15dd-cbe0-4720-b57d-7a094cb0e6c7*ºÖ†Âˆ½Æ
+
+A
+!
+__dummy"
+__dummy_idJ
+feast_repo
+üê†ÂĞäÚ•üê†ÂĞäÚ•
+E
+%
+	equipment"equipment_idJ
+feast_repo
+üê†ÂˆğŞ•üê†ÂˆğŞ•1"$d2750ed6-113c-472b-8190-d27e6c7a1287*Å»‡ÂÀĞ»2‘
+ğ
+f3_timeseries_features
+feast_repo	equipment"
+
+f3_current"
+f3_rolling_mean_10"
+f3_rolling_mean_50"
+f3_rolling_mean_100"
+f3_rolling_std_10"
+f3_rolling_std_50"
+f3_rolling_min_50"
+f3_rolling_max_50"
+f3_rate_of_change"
+movement_direction"
+cycle_position"
+anomaly_class"	
+label2ˆ:event_timestamp*created_timestampZdata/f3_timeseries.parquetŠ1feast.infra.offline_stores.file_source.FileSource¢f3_timeseries_source@b
+equipment_id
+•‡Âøø–ÓÅ»‡Âğ§ğR‰
+†
+,feast.infra.online_stores.sqlite.SqliteTable"Õ
+¯/home/zak/PycharmProjects/mlops_comparison/ideko/MLFlow/failure-prediction-in-manufacture-main/multiclass-classification-model/src/feast_demo/feature_repo/data/online_store.db!feast_repo_f3_timeseries_featuresbœevent_timestamp*created_timestampZdata/f3_timeseries.parquetŠ1feast.infra.offline_stores.file_source.FileSource¢f3_timeseries_sourceª
+feast_repoŠ,
+
+
+feast_repo
+üê†Âà¬–ƒüê†Âà¬–ƒ

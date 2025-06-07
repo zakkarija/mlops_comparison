@@ -3,12 +3,12 @@ NeuralNetwork:
     model_parameters:
         activation_function: relu
         units:
-            - 100
-            - 100
-            - 100
+            - 64
+            - 64
+            - 64
     training_parameters:
-        epochs: 50
-        batch_size: 64
+        epochs: 20
+        batch_size: 32
     name_parameters:
         folder_name: NeuralNetwork
         model_name: model_nn.keras

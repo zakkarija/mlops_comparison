@@ -1,366 +1,352 @@
-'''
-Script for model training
-'''
+# ------------------------------------------------------------------------------------
+# Feast‑powered Time‑series Anomaly‑Detection Training Pipeline
+# ------------------------------------------------------------------------------------
+# This script replaces the old “read many CSVs ➜ pad irregular series” approach with a
+# clean **Feast** offline ­store query.  The rest of the modelling code (NN / CNN / RNN
+# / LSTM) is preserved, but now receives a dynamic **n_features** that automatically
+# adjusts to however many columns we decide to pull from Feast.
+#
+# High‑level flow
+# 1.  Pull a *minimal* feature set (+ label) from Feast in RAM‑bounded batches.
+# 2.  Split *equipment_id* into train / test first → prevents temporal leakage.
+# 3.  Build sliding‑window sequences per split (overlap stride = 2).
+# 4.  Encode labels, train the four architectures, log metrics.
+# ------------------------------------------------------------------------------------
 
+# ===== Standard library
 import os
 import sys
-from helpers.logger import LoggerHelper, logging
-from helpers.config import ConfigHelper
-from helpers import config
-from helpers import logger
+import gc                                    # manual garbage collection after each batch
+
+# ===== Third‑party
 import numpy as np
 import pandas as pd
+from feast import FeatureStore               # offline feature retrieval
+from sklearn.model_selection import train_test_split
+
+# ===== Project helpers
+from helpers.logger import LoggerHelper, logging
+from helpers.config import ConfigHelper
 from classes import preprocessing_functions
-from classes.multiclass_models import NeuralNetwork, ConvolutionalNeuralNetwork, RecurrentNeuralNetwork, LongShortTermMemory
-from feast import FeatureStore
+from classes.multiclass_models import (
+    NeuralNetwork,
+    ConvolutionalNeuralNetwork,
+    RecurrentNeuralNetwork,
+    LongShortTermMemory,
+)
 
-
-# Load logger & config
+# ------------------------------------------------------------------------------------
+# 0 · HOUSE‑KEEPING (logging, config, output dirs)
+# ------------------------------------------------------------------------------------
 LoggerHelper.init_logger()
 logger = logging.getLogger(__name__)
 config = ConfigHelper.instance("models")
 
-############################################################################################################
-# DATA PREPROCESSING
-############################################################################################################
+SCRIPT_DIR   = os.path.dirname(os.path.realpath(__file__))
+OUTPUT_ROOT  = os.path.join(SCRIPT_DIR, "output")
+os.makedirs(OUTPUT_ROOT, exist_ok=True)
 
-# Define paths
-data_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "data")
-output_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "output")
-os.makedirs(output_path, exist_ok = True)
-
-# List of indicators to be read from the file
-indicator_list = ["f3"]
-
-################################
-# READ DATA
-################################
-
-X, Y = preprocessing_functions.read_data(data_path, indicator_list)
-logger.info("Summary of timeseries length %s" %pd.Series([len(x) for x in X]).describe())
-
-# NOTE: The length of all the timeseries in X is not the same.
-# Each file has a different number of points.
-
-################################
-# PADDING
-################################
-
-# To equal the length of the signals add padding (add zeros or nans at the end of the series).
-
-X_pad = preprocessing_functions.add_padding(X, indicator_list)
-
-Y_encoded = preprocessing_functions.encode_response_variable(Y)
-
-# --------------------------------
-# FEAST: build label table & pull aggregates
-# --------------------------------
-label_df = preprocessing_functions.build_label_table(data_path)
-
-agg_feature_list = [
-    "current_stats:current_mean_3s",
-    "current_stats:current_std_3s",
-    "current_stats:current_max_0_5s",
-    "looseness:looseness_mean",
-    "looseness:looseness_p95",
+# ------------------------------------------------------------------------------------
+# 1 · FEATURE DEFINITIONS & FEAST INITIALISATION
+# ------------------------------------------------------------------------------------
+# ✏️  Keep the feature list short – four signals are enough to *demonstrate* how Feast
+#     plugs into the pipeline without exploding dimensionality or memory use.
+FEATURE_COLUMNS = [
+    "f3_current",          # raw sensor reading
+    "f3_rolling_mean_10", # recent average → trend
+    "f3_rolling_std_10",  # recent volatility → noise level / vibration
+    "movement_direction", # engineered categorical (‑1 / 0 / +1)
 ]
 
-agg_df = fs.get_historical_features(
-    entity_df=label_df[["machine_id", "cycle_id", "event_timestamp"]],
-    features=agg_feature_list,
-).to_df()
+# Pre‑pend the feature‑view name expected by Feast (matches repo yaml).
+FEAST_FEATURES = [f"f3_timeseries_features:{col}" for col in FEATURE_COLUMNS]
+LABEL_FEATURE  = "f3_timeseries_features:anomaly_class"  # 0=normal / 1 / 2
 
-logger.info("Aggregates pulled from Feast shape %s", agg_df.shape)
-# (Optional) persist for quick inspection
-agg_df.to_csv(os.path.join(output_path, "feast_aggregates.csv"), index=False)
-# --------------------------------
+# Initialise the FeatureStore client (points to local repo – could be env‑var driven)
+FEAST_REPO = "feast_demo/feature_repo"
+fs = FeatureStore(repo_path=FEAST_REPO)
 
+# ------------------------------------------------------------------------------------
+# 2 · BATCH‑WISE OFFLINE RETRIEVAL  (memory‑friendly)
+# ------------------------------------------------------------------------------------
+logger.info("📡  Querying Feast offline store in batches…")
 
-logger.info("SHAPE X (%d, %d, %d)" %(np.shape(X_pad)))
+# 2‑A · Read only *entity* & *timestamp* columns first – ultra‑cheap.
+timeseries_path = os.path.join(FEAST_REPO, "data", "offline", "f3_timeseries.parquet")
+timeseries_df   = pd.read_parquet(timeseries_path, columns=["equipment_id", "event_timestamp"])
 
-logger.info("Number of timeseries %d" %np.shape(X_pad)[0])
-logger.info("Number of points %d" %np.shape(X_pad)[1])
-logger.info("Number of features %d" %np.shape(X_pad)[2])
+entity_df = timeseries_df.copy()  # just (equipment_id, timestamp)
 
-logger.info("SHAPE X (%d, %d)" %(np.shape(Y_encoded)))
+# 2‑B · Iterate through entity_df in fixed‑size slices; retrieve features+label per slice.
+BATCH_ROWS = 2_000
+total_batches = (len(entity_df) + BATCH_ROWS - 1) // BATCH_ROWS
+num_batches   = min(total_batches, 10)
 
-logger.info("Number of timeseries %d" %np.shape(Y_encoded)[0])
-logger.info("Number of classes %d" %np.shape(Y_encoded)[1])
+batches = []
+for i in range(num_batches):
+    start, end = i * BATCH_ROWS, min((i + 1) * BATCH_ROWS, len(entity_df))
+    batch_entity = entity_df.iloc[start:end]
 
+    logger.info(
+        f"🗂️  Batch {i+1}/{num_batches}  (rows {start}‑{end}) → Feast lookup"
+    )
 
-################################
-# SPLIT DATA
-################################
+    batch_df = fs.get_historical_features(
+        entity_df=batch_entity,
+        features=FEAST_FEATURES + [LABEL_FEATURE],
+    ).to_df()
 
-# Split data into training set and test set
+    batches.append(batch_df)
+    gc.collect()   # release Arrow / PyArrow arena from Feast
 
-X_train, X_test, y_train, y_test = preprocessing_functions.split_data(X_pad, Y_encoded)
+training_df = pd.concat(batches, ignore_index=True)
+del batches, timeseries_df; gc.collect()
 
-n_timestamps = X_train.shape[1]
-n_features = X_train.shape[2]
+logger.info(f"✅  Retrieved  {training_df.shape[0]:,} rows × {training_df.shape[1]} columns")
 
-n_classes = y_train.shape[1]
+# Rename the label for ergonomic access later.
+training_df.rename(columns={LABEL_FEATURE: "anomaly_class"}, inplace=True)
 
+# ------------------------------------------------------------------------------------
+# 3 · TRAIN / TEST SPLIT  *before* windowing  (prevents leakage)
+# ------------------------------------------------------------------------------------
+logger.info("🔀  Splitting by equipment_id to avoid cross‑series leakage…")
 
-############################################################################################################
-# MODEL TRAINING
-############################################################################################################
+all_equip_ids = training_df["equipment_id"].unique()
 
-################################
-# NEURAL NETWORK
-################################
+# For stratification we need one label *per equipment*.  Use the modal class in that
+# equipment's history – pragmatic and keeps sklearn.train_test_split happy.
+majority_label_per_eq = (
+    training_df.groupby("equipment_id")["anomaly_class"]
+    .agg(lambda s: s.value_counts().idxmax())
+    .reindex(all_equip_ids)
+)
 
-# Read NeuralNetwork config
+train_eq, test_eq = train_test_split(
+    all_equip_ids,
+    test_size=0.2,
+    random_state=123,
+    stratify=majority_label_per_eq,
+)
+
+logger.info(f"🛠️  Train = {len(train_eq)} equipment,  Test = {len(test_eq)} equipment")
+
+# Sub‑dataframes
+train_df = training_df[training_df["equipment_id"].isin(train_eq)].copy()
+test_df  = training_df[training_df["equipment_id"].isin(test_eq)].copy()
+
+# ------------------------------------------------------------------------------------
+# 4 · SEQUENCE ( WINDOW ) CONSTRUCTION
+# ------------------------------------------------------------------------------------
+# Each model expects input shaped : (batch, timesteps, features).  We build overlapping
+# windows of 10 time‑steps with stride = 2 (75 % overlap) for a richer training set.
+
+def build_sequences(df: pd.DataFrame, seq_len: int = 10, stride: int = 2):
+    """Return X, y arrays where X.shape = (n_seq, seq_len, n_feat)."""
+    feat_cols = FEATURE_COLUMNS
+    X, y = [], []
+    for eq_id in df["equipment_id"].unique():
+        sub = df[df["equipment_id"] == eq_id].sort_values("event_timestamp")
+        F   = sub[feat_cols].values.astype(np.float32)
+        L   = sub["anomaly_class"].values
+        if len(F) < seq_len:
+            continue  # not enough points to form one window
+        for start in range(0, len(F) - seq_len + 1, stride):
+            X.append(F[start : start + seq_len])
+            y.append(L[start + seq_len - 1])  # label = last item in window
+    return np.asarray(X), np.asarray(y)
+
+SEQ_LEN  = 10
+STRIDE   = 2
+
+X_train, y_train_int = build_sequences(train_df, SEQ_LEN, STRIDE)
+X_test,  y_test_int  = build_sequences(test_df,  SEQ_LEN, STRIDE)
+
+logger.info(
+    f"📐  Built {len(X_train):,} train & {len(X_test):,} test sequences  "
+    f"({SEQ_LEN} timesteps × {len(FEATURE_COLUMNS)} features)"
+)
+
+# ------------------------------------------------------------------------------------
+# 5 · LABEL ENCODING  (one‑hot → categorical_crossentropy)
+# ------------------------------------------------------------------------------------
+LABEL_MAP = {0: "normal", 1: "mechanical_anomaly", 2: "electrical_anomaly"}
+
+# Translate integer → string → one‑hot  (re‑use helper)
+y_train_txt = np.vectorize(LABEL_MAP.get)(y_train_int)
+y_test_txt  = np.vectorize(LABEL_MAP.get)(y_test_int)
+
+Y_train = preprocessing_functions.encode_response_variable(y_train_txt)
+Y_test  = preprocessing_functions.encode_response_variable(y_test_txt)
+
+# ------------------------------------------------------------------------------------
+# 6 · SHAPES & META
+# ------------------------------------------------------------------------------------
+N_TIMESTAMPS = SEQ_LEN
+N_FEATURES   = len(FEATURE_COLUMNS)
+N_CLASSES    = Y_train.shape[1]
+
+logger.info(f"🔢  Model input dims  =  {N_TIMESTAMPS} × {N_FEATURES}")
+logger.info(f"🔢  Num classes       =  {N_CLASSES}")
+
+# ------------------------------------------------------------------------------------
+# 7 · MODEL TRAINING LOOP (4 architectures)
+# ------------------------------------------------------------------------------------
+# Each block is gated by a config flag (config/*.yaml).  All architectures share:
+#   * Early‑stopping (patience = helper default)
+#   * ModelCheckpoint  (saves .keras under output/<arch_name>)
+# The inputs X_train/X_test & Y_train/Y_test are identical across models.
+# ------------------------------------------------------------------------------------
+
+# ---- Helper to DRY callbacks ---------------------------------------------------------
+
+def common_callbacks(folder: str, model_fname: str, model_cls):
+    """Return [early_stop, checkpoint] list for a given model class."""
+    os.makedirs(folder, exist_ok=True)
+    early  = model_cls.early_stopping_callback()
+    ckpt   = model_cls.model_checkpoint_callback(model_path=os.path.join(folder, model_fname))
+    return [early, ckpt]
+
+# ---- Neural Network -----------------------------------------------------------------
 config_nn = config["NeuralNetwork"]
+if config_nn["enabled"]:
+    logger.info("🚀  Training **Neural Network** (dense) …")
 
-# Boolean that indicates whether to train this model or not
-enabled_nn = config_nn["enabled"]
+    nn_folder = os.path.join(OUTPUT_ROOT, config_nn["name_parameters"]["folder_name"] + "_timeseries")
+    nn_model  = config_nn["name_parameters"]["model_name"].replace(".keras", "_timeseries.keras")
 
-if enabled_nn:
+    nn = NeuralNetwork(
+        N_TIMESTAMPS,
+        N_FEATURES,
+        config_nn["model_parameters"]["activation_function"],
+        config_nn["model_parameters"]["units"],
+        N_CLASSES,
+    )
+    nn.create_model()
+    nn.model_compilation(nn.model)
 
-    logger.info("NEURAL NETWORK")
+    history_nn = nn.model_fitting(
+        nn.model,
+        X_train, Y_train,
+        X_test,  Y_test,
+        common_callbacks(nn_folder, nn_model, nn),
+        config_nn["training_parameters"]["epochs"],
+        config_nn["training_parameters"]["batch_size"],
+    )
 
-    # Model name
-    folder_name = config_nn["name_parameters"]["folder_name"]
-    model_name = config_nn["name_parameters"]["model_name"]
+    preprocessing_functions.plot_model_history(history_nn, nn_folder)
+    nn.model_evaluation(nn.model, np.concatenate([X_train, X_test]), np.concatenate([Y_train, Y_test]), X_test, Y_test)
+    logger.info("📊  NN metrics (test)")
+    nn.compute_metrics(nn.model, X_test, Y_test)
 
-    # Path to store the model
-    output_path_nn = os.path.join(output_path, folder_name)
-    os.makedirs(output_path_nn, exist_ok = True)
-
-    # Parameters defining the architecture of the model
-
-    # Activation function
-    activation_function = config_nn["model_parameters"]["activation_function"]
-
-    # The length of the list is the number of layers and each element indicates the number of neurons in each layer.
-    units = config_nn["model_parameters"]["units"]
-
-    # Number of epochs y batch_size
-    epochs = config_nn["training_parameters"]["epochs"]
-    batch_size = config_nn["training_parameters"]["batch_size"]
-
-    # Initialise the model class
-    model_nn = NeuralNetwork(n_timestamps, n_features, activation_function, units, n_classes)
-
-    # Create the model (according to the architecture defined)
-    model_nn.create_model()
-
-    # Define callbacks
-    early_stopping = model_nn.early_stopping_callback()
-    model_checkpoint = model_nn.model_checkpoint_callback(model_path = os.path.join(output_path_nn, model_name))
-    callback_list = [early_stopping, model_checkpoint]
-
-    # Model configuration and model training
-    model_nn.model_compilation(model_nn.model)
-    history_nn = model_nn.model_fitting(model_nn.model, X_train, y_train, X_test, y_test, callback_list, epochs, batch_size)
-
-    # Plot history of the model
-    preprocessing_functions.plot_model_history(history_nn, output_path_nn)
-
-    # Model evaluation
-    model_nn.model_evaluation(model_nn.model, X_pad, Y_encoded, X_test, y_test)
-
-    # Metrics whole dataset
-    logger.info("Metrics WHOLE DATASET")
-    model_nn.compute_metrics(model_nn.model, X_pad, Y_encoded)
-
-    # Metrics test data
-    logger.info("Metrics TEST DATA")
-    model_nn.compute_metrics(model_nn.model, X_test, y_test)
-
-
-########################################
-# CONVOLUTIONAL NEURAL NETWORK (CNN)
-########################################
-
-# Read CNN config
+# ---- Convolutional Neural Network ----------------------------------------------------
 config_cnn = config["CNN"]
+if config_cnn["enabled"]:
+    logger.info("🚀  Training **CNN** …")
 
-# Boolean that indicates whether to train this model or not
-enabled_cnn = config_cnn["enabled"]
+    cnn_folder = os.path.join(OUTPUT_ROOT, config_cnn["name_parameters"]["folder_name"] + "_timeseries")
+    cnn_model  = config_cnn["name_parameters"]["model_name"].replace(".keras", "_timeseries.keras")
 
-if enabled_cnn:
+    # Ensure kernel width ≤ N_FEATURES (otherwise Keras will complain)
+    kernel_size = tuple(config_cnn["model_parameters"]["kernel_size"])
+    if kernel_size[1] > N_FEATURES:
+        kernel_size = (kernel_size[0], N_FEATURES)
 
-    logger.info("CONVOLUTIONAL NEURAL NETWORK (CNN)")
+    cnn = ConvolutionalNeuralNetwork(
+        N_TIMESTAMPS,
+        N_FEATURES,
+        config_cnn["model_parameters"]["activation_function"],
+        config_cnn["model_parameters"]["filters"],
+        kernel_size,
+        config_cnn["model_parameters"]["pool_size"],
+        N_CLASSES,
+    )
+    cnn.create_model()
+    cnn.model_compilation(cnn.model)
 
-    # Model name
-    folder_name = config_cnn["name_parameters"]["folder_name"]
-    model_name = config_cnn["name_parameters"]["model_name"]
+    history_cnn = cnn.model_fitting(
+        cnn.model,
+        X_train, Y_train,
+        X_test,  Y_test,
+        common_callbacks(cnn_folder, cnn_model, cnn),
+        config_cnn["training_parameters"]["epochs"],
+        config_cnn["training_parameters"]["batch_size"],
+    )
 
-    # Path to store the model
-    output_path_cnn = os.path.join(output_path, folder_name)
-    os.makedirs(output_path_cnn, exist_ok = True)
+    preprocessing_functions.plot_model_history(history_cnn, cnn_folder)
+    cnn.model_evaluation(cnn.model, np.concatenate([X_train, X_test]), np.concatenate([Y_train, Y_test]), X_test, Y_test)
+    logger.info("📊  CNN metrics (test)")
+    cnn.compute_metrics(cnn.model, X_test, Y_test)
 
-    # Parameters defining the architecture of the model
-
-    # Activation function
-    activation_function = config_cnn["model_parameters"]["activation_function"]
-
-    # The length of the list is the number of layers and each element indicates the number of filters.
-    filters = config_cnn["model_parameters"]["filters"]
-
-    # Filter and pooling size
-    kernel_size = config_cnn["model_parameters"]["kernel_size"]
-    pool_size = config_cnn["model_parameters"]["pool_size"]
-
-    # Number of epochs and batch_size
-    epochs = config_cnn["training_parameters"]["epochs"]
-    batch_size = config_cnn["training_parameters"]["batch_size"]
-
-    # Initialise the model class
-    model_cnn = ConvolutionalNeuralNetwork(n_timestamps, n_features, activation_function, filters, kernel_size, pool_size, n_classes)
-
-    # Create the model (according to the architecture defined)
-    model_cnn.create_model()
-
-    # Define callbacks
-    early_stopping = model_cnn.early_stopping_callback()
-    model_checkpoint = model_cnn.model_checkpoint_callback(model_path = os.path.join(output_path_cnn, model_name))
-    callback_list = [early_stopping, model_checkpoint]
-
-    # Model configuration and model training
-    model_cnn.model_compilation(model_cnn.model)
-    history_cnn = model_cnn.model_fitting(model_cnn.model, X_train, y_train, X_test, y_test, callback_list, epochs, batch_size)
-
-    # Plote history of the model
-    preprocessing_functions.plot_model_history(history_cnn, output_path_cnn)
-
-    # Model evaluation
-    model_cnn.model_evaluation(model_cnn.model, X_pad, Y_encoded, X_test, y_test)
-
-    # Metrics whole dataset
-    logger.info("Metrics WHOLE DATASET")
-    model_cnn.compute_metrics(model_cnn.model, X_pad, Y_encoded)
-
-    # Metrics test data
-    logger.info("Metrics TEST DATA")
-    model_cnn.compute_metrics(model_cnn.model, X_test, y_test)
-
-
-################################
-# RECURRENT NEURAL NETWORK (RNN)
-################################
-
-# Leer RNN config
+# ---- Recurrent Neural Network --------------------------------------------------------
 config_rnn = config["RNN"]
+if config_rnn["enabled"]:
+    logger.info("🚀  Training **RNN** …")
 
-# Boolean that indicates whether to train this model or not.
-enabled_rnn = config_rnn["enabled"]
+    rnn_folder = os.path.join(OUTPUT_ROOT, config_rnn["name_parameters"]["folder_name"] + "_timeseries")
+    rnn_model  = config_rnn["name_parameters"]["model_name"].replace(".keras", "_timeseries.keras")
 
-if enabled_rnn:
+    rnn = RecurrentNeuralNetwork(
+        N_TIMESTAMPS,
+        N_FEATURES,
+        config_rnn["model_parameters"]["activation_function"],
+        config_rnn["model_parameters"]["hidden_units"],
+        N_CLASSES,
+    )
+    rnn.create_model()
+    rnn.model_compilation(rnn.model)
 
-    logger.info("RECURRENT NEURAL NETWORK (RNN)")
+    history_rnn = rnn.model_fitting(
+        rnn.model,
+        X_train, Y_train,
+        X_test,  Y_test,
+        common_callbacks(rnn_folder, rnn_model, rnn),
+        config_rnn["training_parameters"]["epochs"],
+        config_rnn["training_parameters"]["batch_size"],
+    )
 
-    # Model name
-    folder_name = config_rnn["name_parameters"]["folder_name"]
-    model_name = config_rnn["name_parameters"]["model_name"]
+    preprocessing_functions.plot_model_history(history_rnn, rnn_folder)
+    rnn.model_evaluation(rnn.model, np.concatenate([X_train, X_test]), np.concatenate([Y_train, Y_test]), X_test, Y_test)
+    logger.info("📊  RNN metrics (test)")
+    rnn.compute_metrics(rnn.model, X_test, Y_test)
 
-    # Path to store the model
-    output_path_rnn = os.path.join(output_path, folder_name)
-    os.makedirs(output_path_rnn, exist_ok = True)
-
-    # Parameters defining the architecture of the model
-
-    # Activation function
-    activation_function = config_rnn["model_parameters"]["activation_function"]
-
-    # Layers and neurons in each layer
-    hidden_units = config_rnn["model_parameters"]["hidden_units"]
-
-    # Number of epochs and batch_size
-    epochs = config_rnn["training_parameters"]["epochs"]
-    batch_size = config_rnn["training_parameters"]["batch_size"]
-
-    # Initialise the model class
-    model_rnn = RecurrentNeuralNetwork(n_timestamps, n_features, activation_function, hidden_units, n_classes)
-
-    # Create the model (according to the architecture defined)
-    model_rnn.create_model()
-
-    # Define callbacks
-    early_stopping = model_rnn.early_stopping_callback()
-    model_checkpoint = model_rnn.model_checkpoint_callback(model_path = os.path.join(output_path_rnn, model_name))
-    callback_list = [early_stopping, model_checkpoint]
-
-    # Model configuration and training
-    model_rnn.model_compilation(model_rnn.model)
-    history_rnn = model_rnn.model_fitting(model_rnn.model, X_train, y_train, X_test, y_test, callback_list, epochs, batch_size)
-
-    # Plot history of the model
-    preprocessing_functions.plot_model_history(history_rnn, output_path_rnn)
-
-    # Model evaluation
-    model_rnn.model_evaluation(model_rnn.model, X_pad, Y_encoded, X_test, y_test)
-
-    # Metrics whole dataset
-    logger.info("Metrics WHOLE DATASET")
-    model_rnn.compute_metrics(model_rnn.model, X_pad, Y_encoded)
-
-    # Metrics test data
-    logger.info("Metrics TEST DATA")
-    model_rnn.compute_metrics(model_rnn.model, X_test, y_test)
-
-
-################################
-# LONG SHORT TERM MEMORY (LSTM)
-################################
-
-# Read LSTM config
+# ---- Long Short‑Term Memory ----------------------------------------------------------
 config_lstm = config["LSTM"]
+if config_lstm["enabled"]:
+    logger.info("🚀  Training **LSTM** …")
 
-# Boolean that indicates whether to train this model or not
-enabled_lstm = config_lstm["enabled"]
+    lstm_folder = os.path.join(OUTPUT_ROOT, config_lstm["name_parameters"]["folder_name"] + "_timeseries")
+    lstm_model  = config_lstm["name_parameters"]["model_name"].replace(".keras", "_timeseries.keras")
 
-if enabled_lstm:
+    lstm = LongShortTermMemory(
+        N_TIMESTAMPS,
+        N_FEATURES,
+        config_lstm["model_parameters"]["activation_function"],
+        config_lstm["model_parameters"]["hidden_units"],
+        N_CLASSES,
+    )
+    lstm.create_model()
+    lstm.model_compilation(lstm.model)
 
-    logger.info("LONG SHORT TERM MEMORY (LSTM)")
+    history_lstm = lstm.model_fitting(
+        lstm.model,
+        X_train, Y_train,
+        X_test,  Y_test,
+        common_callbacks(lstm_folder, lstm_model, lstm),
+        config_lstm["training_parameters"]["epochs"],
+        config_lstm["training_parameters"]["batch_size"],
+    )
 
-    # Model name
-    folder_name = config_lstm["name_parameters"]["folder_name"]
-    model_name = config_lstm["name_parameters"]["model_name"]
+    preprocessing_functions.plot_model_history(history_lstm, lstm_folder)
+    lstm.model_evaluation(lstm.model, np.concatenate([X_train, X_test]), np.concatenate([Y_train, Y_test]), X_test, Y_test)
+    logger.info("📊  LSTM metrics (test)")
+    lstm.compute_metrics(lstm.model, X_test, Y_test)
 
-    # Path to store the model
-    output_path_lstm = os.path.join(output_path, folder_name)
-    os.makedirs(output_path_lstm, exist_ok = True)
+# ------------------------------------------------------------------------------------
+# 8 · SAVE & FINAL LOG
+# ------------------------------------------------------------------------------------
+training_df.to_csv(os.path.join(OUTPUT_ROOT, "feast_timeseries_features.csv"), index=False)
 
-    # Parameters defining the architecture of the model
-
-    # Activation function
-    activation_function = config_lstm["model_parameters"]["activation_function"]
-
-    # Number of layers and the dimensions
-    hidden_units = config_lstm["model_parameters"]["hidden_units"]
-
-    # Number of epochs and batch_size
-    epochs = config_lstm["training_parameters"]["epochs"]
-    batch_size = config_lstm["training_parameters"]["batch_size"]
-
-    # Initialise the model class
-    model_lstm = LongShortTermMemory(n_timestamps, n_features, activation_function, hidden_units, n_classes)
-
-    # Create the model (according to the architecture defined)
-    model_lstm.create_model()
-
-    # Definir callbacks
-    early_stopping = model_lstm.early_stopping_callback()
-    model_checkpoint = model_lstm.model_checkpoint_callback(model_path = os.path.join(output_path_lstm, model_name))
-    callback_list = [early_stopping, model_checkpoint]
-
-    # Model configuration and training
-    model_lstm.model_compilation(model_lstm.model)
-    history_lstm = model_lstm.model_fitting(model_lstm.model, X_train, y_train, X_test, y_test, callback_list, epochs, batch_size)
-
-    # Plot history of the model
-    preprocessing_functions.plot_model_history(history_lstm, output_path_lstm)
-
-    # Model evaluation
-    model_lstm.model_evaluation(model_lstm.model, X_pad, Y_encoded, X_test, y_test)
-
-    # Metrics whole dataset
-    logger.info("Metrics WHOLE DATASET")
-    model_lstm.compute_metrics(model_lstm.model, X_pad, Y_encoded)
-
-    # Metrics test data
-    logger.info("Metrics TEST DATA")
-    model_lstm.compute_metrics(model_lstm.model, X_test, y_test)
+logger.info("🎉  Finished training with Feast‑backed time‑series features!")
+logger.info(f"📝  Sequences per split → train {len(X_train):,} / test {len(X_test):,}")
+logger.info(f"💡  Feature dims        → {N_FEATURES}")
