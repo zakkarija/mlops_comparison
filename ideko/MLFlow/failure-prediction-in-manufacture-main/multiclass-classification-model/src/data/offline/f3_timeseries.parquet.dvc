@@ -1,0 +1,5 @@
+outs:
+- md5: 69ba0c9c5048c52a4ae79d27eacb08bd
+  size: 116699525
+  hash: md5
+  path: f3_timeseries.parquet
