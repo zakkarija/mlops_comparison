@@ -1,1 +1,26 @@
-1"$f8314363-d07c-4536-884d-8b59f3c8f863*²í—Â°¯ÔÔ
+
+@
+"
+__dummy"
+__dummy_idJideko_local
+âŸ˜Â¸­åKâŸ˜Â¸­åK
+D
+&
+	equipment"equipment_idJideko_local
+âŸ˜ÂÈïéKâŸ˜ÂÈïéK1"$69c4ae8a-98e6-41d3-b72e-bbe847f6d89f*âŸ˜ÂèáøK2¦
+‡
+f3_timeseries_featuresideko_local	equipment"
+
+f3_current"
+f3_rolling_mean_10"
+f3_rolling_std_10"
+anomaly_class"	
+label2ˆ:Şevent_timestamp*created_timestampZÀ½/home/zak/PycharmProjects/mlops_comparison/ideko/MLFlow/failure-prediction-in-manufacture-main/multiclass-classification-model/src/feast_demo/feature_repo/data/offline/f3_timeseries.parquetŠ1feast.infra.offline_stores.file_source.FileSource¢½/home/zak/PycharmProjects/mlops_comparison/ideko/MLFlow/failure-prediction-in-manufacture-main/multiclass-classification-model/src/feast_demo/feature_repo/data/offline/f3_timeseries.parquet@b
+equipment_id
+âŸ˜Â¨ÄíKâŸ˜Â¨ÄíKRŠ
+‡
+,feast.infra.online_stores.sqlite.SqliteTable"Ö
+¯/home/zak/PycharmProjects/mlops_comparison/ideko/MLFlow/failure-prediction-in-manufacture-main/multiclass-classification-model/src/feast_demo/feature_repo/data/online_store.db"ideko_local_f3_timeseries_featuresbìevent_timestamp*created_timestampZÀ½/home/zak/PycharmProjects/mlops_comparison/ideko/MLFlow/failure-prediction-in-manufacture-main/multiclass-classification-model/src/feast_demo/feature_repo/data/offline/f3_timeseries.parquetŠ1feast.infra.offline_stores.file_source.FileSource¢½/home/zak/PycharmProjects/mlops_comparison/ideko/MLFlow/failure-prediction-in-manufacture-main/multiclass-classification-model/src/feast_demo/feature_repo/data/offline/f3_timeseries.parquetªideko_localŠ+
+
+ideko_local
+âŸ˜Â —¢;âŸ˜Â —¢;
