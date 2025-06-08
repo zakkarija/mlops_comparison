@@ -29,7 +29,11 @@ dvc.lock
 # Feast’s default local sqlite stores (use a real DB in prod instead)
 offline.db
 registry.db
+
+# ignore all parquet files but do not ignore DVC pointer files for them:
 *.parquet
+!*.parquet.dvc
+
 
 # ─── Data artifacts ─────────────────────────────────────────
 # Raw CSVs/ZIPs tracked by DVC should not live in Git
