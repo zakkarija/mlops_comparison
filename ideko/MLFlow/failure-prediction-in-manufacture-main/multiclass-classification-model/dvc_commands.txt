@@ -1,0 +1,50 @@
+  782  pip install dvc
+  783  dvc pull
+  784  pip upgrade dvs-s3
+  785  pip install dvc-s3
+  786  dvc pull
+  787* cd ~
+  788* mkdir -p ~/.aws
+  789* nano ~/.aws/credentials
+  790* cat ~/.aws/credentials
+  791  dvc pull
+  792  dvc add data/electrical_anomalies/
+  793  dvc config core.autostage true
+  794  git add data.dvc
+  795  dvc status
+  796  git commit -m "Remove selected electical anomolies entries from data folder" 
+  797  dvc status
+  798  clear
+  799  rm data/electrical_anomalies/20231117/
+  800  rm -rf data/electrical_anomalies/20231117/
+  801  dvc status
+  802  dvc add data/electrical_anomalies/
+  803  git status
+  804  git commit -m "DVC data/electrical_anomolies changes" 
+  805  dvc status
+  806  dvc push
+  807  # Dump your entire session history to a text file\nhistory > my_commands.txt
+  808  ls
+  809  cat my_commands.txt
+  810  history | tail -n 40 > last_40_commands.txt
+  811  cat last_40_commands.txt
+  812  clear
+  813  git status
+  814  clear
+  815  git revert 95079055bc43bbafcb31ff9eb0815537f480889e
+  816  git revert
+  817  clear
+  818  dvc pull
+  819  clear
+  820  dvc pull
+  821  clear
+  822  git checkout HEAD~2
+  823  dvc checkout
+  824  dvc pull
+  825  dvc push
+  826  git switch -c restore-point 2ece292\n
+  827  git switch main\n
+  828  git merge restore-point
+  829  dvc pull
+  830  git push origin main\n
+  831  dvc push
