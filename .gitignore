@@ -335,3 +335,4 @@ environment.yml
 # Local credentials & secrets
 .env.*
 docker-compose.override.yml
+/ideko/kubeflow/kubeflow-venv/
