@@ -1,8 +1,0 @@
-task ValidateModel {
-
-    define input data FileToValidate;
-    define input data OutputFolder;
-
-    implementation "multiclass/ValidateModel/task.py";
-    dependency "multiclass/**";
-}
