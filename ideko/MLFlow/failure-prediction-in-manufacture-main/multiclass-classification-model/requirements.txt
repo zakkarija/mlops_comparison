@@ -10,3 +10,4 @@ scikit-learn==1.4.2
 urllib3==2.2.1
 feast==0.37.1
 scikit-learn==1.4.2
+dvc[s3]
