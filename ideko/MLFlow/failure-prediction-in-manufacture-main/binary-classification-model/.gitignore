@@ -1,9 +1,0 @@
-*.csv
-*.pyc
-.pymodules
-__pycache__
-/src/logs
-/src/output
-/src/data_local
-/data
-/output

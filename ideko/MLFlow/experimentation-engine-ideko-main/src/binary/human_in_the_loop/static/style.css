@@ -1,6 +1,0 @@
-body { font-family: Arial, sans-serif; text-align: center; }
-.container { display: flex; justify-content: center; gap: 20px; margin-top: 20px; }
-.file-item { text-align: center; }
-.circle { width: 60px; height: 60px; border-radius: 50%; display: inline-block; border: 2px solid black; }
-.controls { margin-top: 10px; }
-.modal { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 20px; border: 1px solid black; }
