@@ -1,13 +1,12 @@
 #Requirements
 # DVC and FEAST
-PyYAML==6.0.1
-numpy==1.24.4
-pandas==2.2.2
-matplotlib==3.8.4
-keras==3.2.1
-tensorflow==2.16.1
-scikit-learn==1.4.2
-urllib3==2.2.1
-feast==0.37.1
-scikit-learn==1.4.2
+PyYAML
+numpy
+pandas
+matplotlib
+keras
+tensorflow
+scikit-learn
+urllib3
+feast
 dvc[s3]

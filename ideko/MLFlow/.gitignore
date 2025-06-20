@@ -20,8 +20,6 @@ venv/
 # ─── DVC ────────────────────────────────────────────────────
 # DVC metadata and cache directory
 .dvc/
-# DVC “.dvc” files (metafiles for added data)
-*.dvc
 # lockfile for pipelines
 dvc.lock
 
