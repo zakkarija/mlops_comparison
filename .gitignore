@@ -1,2 +1,4 @@
 .idea/
 /ideko/kubeflow/kubeflow-venv/
+
+*.keras
