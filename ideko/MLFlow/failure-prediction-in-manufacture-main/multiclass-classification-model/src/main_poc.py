@@ -29,8 +29,7 @@ fs = FeatureStore(repo_path=feast_repo_path)
 FEATURE_COLUMNS = [
     "f3_current",           # Current sensor reading
     "f3_rolling_mean_10",   # Average of last 10 readings
-    "f3_rolling_std_10",    # Standard deviation of last 10 readings  
-    "movement_direction",   # Direction of movement (-1, 0, 1)
+    "f3_rolling_std_10",    # Standard deviation of last 10 readings
 ]
 
 minimal_feast_features = [

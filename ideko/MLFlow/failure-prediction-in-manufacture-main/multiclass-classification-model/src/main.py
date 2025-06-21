@@ -55,7 +55,6 @@ FEATURE_COLUMNS = [
     "f3_current",          # raw sensor reading
     "f3_rolling_mean_10", # recent average → trend
     "f3_rolling_std_10",  # recent volatility → noise level / vibration
-    "movement_direction", # engineered categorical (‑1 / 0 / +1)
 ]
 
 # Pre‑pend the feature‑view name expected by Feast (matches repo yaml).

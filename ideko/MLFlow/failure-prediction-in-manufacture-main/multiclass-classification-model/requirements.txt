@@ -8,5 +8,5 @@ keras
 tensorflow
 scikit-learn
 urllib3
-feast
+#  feast Manually install 0.37.1 since airflow installs a very old non-cli/non-python verion :/
 dvc[s3]
