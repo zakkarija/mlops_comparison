@@ -1,0 +1,14 @@
+artifact_uri: mlflow-artifacts:/0/5165fbb2d4d843afbf56ef388efb76c5/artifacts
+end_time: 1750523712980
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 5165fbb2d4d843afbf56ef388efb76c5
+run_name: NeuralNetwork_training
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1750523709843
+status: 3
+tags: []
+user_id: zak
