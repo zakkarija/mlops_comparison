@@ -1,5 +1,5 @@
 NeuralNetwork:
-    enabled: True
+    enabled: False
     model_parameters:
         activation_function: relu
         units:
@@ -45,7 +45,7 @@ RNN:
         model_name: model_RNN.keras
 
 LSTM:
-    enabled: False
+    enabled: True
     model_parameters:
         activation_function: tanh
         hidden_units:

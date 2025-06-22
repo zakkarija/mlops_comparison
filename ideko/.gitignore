@@ -1,0 +1,29 @@
+# --- Your original patterns ---
+# ignore all zip archives
+*.zip
+# ignore any filename starting with a digit
+[0-9]*
+# ignore any logs/ directory at any level
+logs/
+# ignore Python caches
+__pycache__/
+*.pyc
+
+# --- MLflow & ML artifacts ---
+mlruns/
+mlartifacts/
+
+# --- Airflow “state” files (SQLite DB + generated passwords) ---
+MLFlow/airflow_home/airflow.db*
+MLFlow/airflow_home/simple_auth_manager_passwords.json.generated
+
+# --- Feast local stores (cache DBs) ---
+**/feature_repo/data/*.db
+
+# --- DVC‐managed outputs (keep .dvc files, ignore actual data) ---
+artifacts/
+data/
+
+# --- OS cruft ---
+.DS_Store
+

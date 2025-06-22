@@ -4,7 +4,8 @@ import logging.config
 from helpers.config import ConfigHelper
 
 class LoggerHelper:
-    
+
+    @staticmethod
     def init_logger():
         """ Initiates logging
         """
@@ -17,7 +18,7 @@ class LoggerHelper:
                 print("Successfully created the directory %s/logs" % path)
         except OSError:
             print("Creation of the directory %s/logs failed" % path)
-      
+
 
         # Incializar el logger
         try:
