@@ -23,11 +23,10 @@ OUTPUT_ROOT = os.path.join(os.path.dirname(__file__), "output")
 os.makedirs(OUTPUT_ROOT, exist_ok=True)
 
 # MLflow run configuration
-MLFLOW_RUN_NAME = "SystemMetricsLogTest"
+MLFLOW_RUN_NAME = "OptunaTuned"
 
 # Optuna configuration
-ENABLE_OPTUNA = True  # Set to False to skip optimization
-OPTUNA_N_TRIALS = 10  # Number of hyperparameter trials per model
+OPTUNA_N_TRIALS = 3  # Number of hyperparameter trials per model (reduced for testing)
 
 # Helper function to check class distribution at different stages
 def _check(label_arr, stage):
@@ -159,31 +158,17 @@ def common_callbacks(folder, fname, model_obj):
         model_obj.model_checkpoint_callback(os.path.join(folder, fname))
     ]
 
-def get_optimized_params(model_class, model_type, base_config):
-    """Get optimized parameters using Optuna or return base config"""
-    if ENABLE_OPTUNA:
-        best_params, study = OptunaHelper.optimize_model(
-            model_class, model_type, base_config, 
-            X_train, Y_train, X_test, Y_test,
-            N_TS, N_FEAT, N_CLS, OPTUNA_N_TRIALS
-        )
-        # Log study to MLflow
-        mlflow.log_params({f"optuna_{k}": v for k, v in best_params.items()})
-        mlflow.log_metric("optuna_best_accuracy", study.best_value)
-        return best_params
-    return None
-
-# === 6 · MODEL TRAINING ===
+# === 6 · MODEL TRAINING WITH OPTUNA OPTIMIZATION ===
 
 ##################################
 # NEURAL NETWORK
 ##################################
 config_nn = config["NeuralNetwork"]
 if config_nn["enabled"]:
-    logger.info("🚀 Training NEURAL NETWORK model...")
+    logger.info("🚀 Training NEURAL NETWORK model with Optuna optimization...")
 
     with mlflow.start_run(run_name=f"{MLFLOW_RUN_NAME}_NeuralNetwork"):
-        # Log input dataset using MLflow's automatic metadata extraction
+        # Log input dataset
         dataset = mlflow.data.from_pandas(
             training_df,
             source=parquet_source_path,
@@ -191,39 +176,38 @@ if config_nn["enabled"]:
         )
         mlflow.log_input(dataset, context="training")
 
-        # Get optimized parameters
-        optuna_params = get_optimized_params(NeuralNetwork, "NeuralNetwork", config_nn)
+        # Get optimized parameters from Optuna
+        best_params, study = OptunaHelper.optimize_model(
+            NeuralNetwork, "NeuralNetwork", config_nn,
+            X_train, Y_train, X_test, Y_test,
+            N_TS, N_FEAT, N_CLS, OPTUNA_N_TRIALS
+        )
         
-        # Use optimized parameters if available, else use config
-        if optuna_params:
-            activation_function = optuna_params.get("activation", config_nn["model_parameters"]["activation_function"])
-            units = optuna_params.get("units", config_nn["model_parameters"]["units"])
-            batch_size = optuna_params.get("batch_size", config_nn["training_parameters"]["batch_size"])
-            learning_rate = optuna_params.get("learning_rate", 0.001)
-        else:
-            activation_function = config_nn["model_parameters"]["activation_function"]
-            units = config_nn["model_parameters"]["units"]
-            batch_size = config_nn["training_parameters"]["batch_size"]
-            learning_rate = 0.001
+        # Log Optuna results to MLflow
+        mlflow.log_params({f"optuna_{k}": v for k, v in best_params.items()})
+        mlflow.log_metric("optuna_best_accuracy", study.best_value)
+
+        # Use optimized parameters
+        activation_function = best_params["activation"]
+        units = best_params["units"]
+        batch_size = best_params["batch_size"]
+        learning_rate = best_params["learning_rate"]
 
         # Model paths and parameters
         folder = os.path.join(OUTPUT_ROOT, config_nn["name_parameters"]["folder_name"])
-        fname = config_nn["name_parameters"]["model_name"].replace(".keras", "_feast.keras")
+        fname = config_nn["name_parameters"]["model_name"].replace(".keras", "_optuna.keras")
         epochs = config_nn["training_parameters"]["epochs"]
 
-        # Create and train model
+        # Create and train model with optimized parameters
         model_nn = NeuralNetwork(N_TS, N_FEAT, activation_function, units, N_CLS)
         model_nn.create_model()
         
-        # Compile with optimized learning rate if available
-        if optuna_params:
-            model_nn.model.compile(
-                optimizer=model_nn.model.optimizer.__class__(learning_rate=learning_rate),
-                loss=model_nn.model.loss,
-                metrics=model_nn.model.metrics
-            )
-        else:
-            model_nn.model_compilation(model_nn.model)
+        # Compile with optimized learning rate
+        model_nn.model.compile(
+            optimizer=model_nn.model.optimizer.__class__(learning_rate=learning_rate),
+            loss=model_nn.model.loss,
+            metrics=model_nn.model.metrics
+        )
 
         history = model_nn.model_fitting(
             model_nn.model, X_train, Y_train, X_test, Y_test,
@@ -235,34 +219,53 @@ if config_nn["enabled"]:
         model_nn.model_evaluation(model_nn.model, np.concatenate([X_train, X_test]), np.concatenate([Y_train, Y_test]), X_test, Y_test)
         model_nn.compute_metrics(model_nn.model, X_test, Y_test)
 
-        # Register model manually (autologging handles metrics/params automatically)
-        mlflow.register_model(f"runs:/{mlflow.active_run().info.run_id}/model", "NeuralNetwork_FailurePrediction")
+        # Register model
+        mlflow.register_model(f"runs:/{mlflow.active_run().info.run_id}/model", "NeuralNetwork_OptunaTuned")
 
-        logger.info("✅ NeuralNetwork model logged to MLflow registry")
+        logger.info("✅ NeuralNetwork model with Optuna optimization logged to MLflow registry")
 
 ##################################
 # CONVOLUTIONAL NEURAL NETWORK
 ##################################
 config_cnn = config["CNN"]
 if config_cnn["enabled"]:
-    logger.info("🚀 Training CNN model...")
+    logger.info("🚀 Training CNN model with Optuna optimization...")
 
     with mlflow.start_run(run_name=f"{MLFLOW_RUN_NAME}_CNN"):
+        # Get optimized parameters from Optuna
+        best_params, study = OptunaHelper.optimize_model(
+            ConvolutionalNeuralNetwork, "CNN", config_cnn,
+            X_train, Y_train, X_test, Y_test,
+            N_TS, N_FEAT, N_CLS, OPTUNA_N_TRIALS
+        )
+        
+        # Log Optuna results to MLflow
+        mlflow.log_params({f"optuna_{k}": v for k, v in best_params.items()})
+        mlflow.log_metric("optuna_best_accuracy", study.best_value)
+
+        # Use optimized parameters
+        activation_function = best_params["activation"]
+        filters = best_params["filters"]
+        kernel_size = best_params["kernel_size"]
+        pool_size = best_params["pool_size"]
+        batch_size = best_params["batch_size"]
+        learning_rate = best_params["learning_rate"]
+
         # Model paths and parameters
         folder = os.path.join(OUTPUT_ROOT, config_cnn["name_parameters"]["folder_name"])
-        fname = config_cnn["name_parameters"]["model_name"].replace(".keras", "_feast.keras")
-
-        activation_function = config_cnn["model_parameters"]["activation_function"]
-        filters = config_cnn["model_parameters"]["filters"]
-        kernel_size = config_cnn["model_parameters"]["kernel_size"]
-        pool_size = config_cnn["model_parameters"]["pool_size"]
+        fname = config_cnn["name_parameters"]["model_name"].replace(".keras", "_optuna.keras")
         epochs = config_cnn["training_parameters"]["epochs"]
-        batch_size = config_cnn["training_parameters"]["batch_size"]
 
-        # Create and train model
+        # Create and train model with optimized parameters
         model_cnn = ConvolutionalNeuralNetwork(N_TS, N_FEAT, activation_function, filters, kernel_size, pool_size, N_CLS)
         model_cnn.create_model()
-        model_cnn.model_compilation(model_cnn.model)
+        
+        # Compile with optimized learning rate
+        model_cnn.model.compile(
+            optimizer=model_cnn.model.optimizer.__class__(learning_rate=learning_rate),
+            loss=model_cnn.model.loss,
+            metrics=model_cnn.model.metrics
+        )
 
         history = model_cnn.model_fitting(
             model_cnn.model, X_train, Y_train, X_test, Y_test,
@@ -274,128 +277,100 @@ if config_cnn["enabled"]:
         model_cnn.model_evaluation(model_cnn.model, np.concatenate([X_train, X_test]), np.concatenate([Y_train, Y_test]), X_test, Y_test)
         model_cnn.compute_metrics(model_cnn.model, X_test, Y_test)
 
-        # Log to MLflow
-        from mlflow.models.signature import infer_signature
-        sample_input = X_test[:5]
-        sample_predictions = model_cnn.model.predict(sample_input, verbose=0)
-        signature = infer_signature(sample_input, sample_predictions)
+        # Register model
+        mlflow.register_model(f"runs:/{mlflow.active_run().info.run_id}/model", "CNN_OptunaTuned")
 
-        mlflow.keras.log_model(
-            model=model_cnn.model, artifact_path="model", signature=signature,
-            registered_model_name="CNN_FailurePrediction"
-        )
-
-        test_loss, test_accuracy = model_cnn.model.evaluate(X_test, Y_test, verbose=0)
-        mlflow.log_params({
-            "model_architecture": "CNN", "sequence_length": N_TS, "n_features": N_FEAT,
-            "n_classes": N_CLS, "activation_function": activation_function, "epochs": epochs, "batch_size": batch_size
-        })
-        mlflow.log_metrics({"test_loss": test_loss, "test_accuracy": test_accuracy})
-
-        logger.info("✅ CNN model logged to MLflow registry")
+        logger.info("✅ CNN model with Optuna optimization logged to MLflow registry")
 
 ##################################
-# RECURRENT NEURAL NETWORK
+# RNN AND LSTM (Similar pattern)
 ##################################
 config_rnn = config["RNN"]
 if config_rnn["enabled"]:
-    logger.info("🚀 Training RNN model...")
+    logger.info("🚀 Training RNN model with Optuna optimization...")
 
     with mlflow.start_run(run_name=f"{MLFLOW_RUN_NAME}_RNN"):
-        # Model paths and parameters
+        best_params, study = OptunaHelper.optimize_model(
+            RecurrentNeuralNetwork, "RNN", config_rnn,
+            X_train, Y_train, X_test, Y_test,
+            N_TS, N_FEAT, N_CLS, OPTUNA_N_TRIALS
+        )
+        
+        mlflow.log_params({f"optuna_{k}": v for k, v in best_params.items()})
+        mlflow.log_metric("optuna_best_accuracy", study.best_value)
+
+        activation_function = best_params["activation"]
+        hidden_units = best_params["hidden_units"]
+        batch_size = best_params["batch_size"]
+        learning_rate = best_params["learning_rate"]
+
         folder = os.path.join(OUTPUT_ROOT, config_rnn["name_parameters"]["folder_name"])
-        fname = config_rnn["name_parameters"]["model_name"].replace(".keras", "_feast.keras")
-
-        activation_function = config_rnn["model_parameters"]["activation_function"]
-        hidden_units = config_rnn["model_parameters"]["hidden_units"]
+        fname = config_rnn["name_parameters"]["model_name"].replace(".keras", "_optuna.keras")
         epochs = config_rnn["training_parameters"]["epochs"]
-        batch_size = config_rnn["training_parameters"]["batch_size"]
 
-        # Create and train model
         model_rnn = RecurrentNeuralNetwork(N_TS, N_FEAT, activation_function, hidden_units, N_CLS)
         model_rnn.create_model()
-        model_rnn.model_compilation(model_rnn.model)
+        
+        model_rnn.model.compile(
+            optimizer=model_rnn.model.optimizer.__class__(learning_rate=learning_rate),
+            loss=model_rnn.model.loss,
+            metrics=model_rnn.model.metrics
+        )
 
         history = model_rnn.model_fitting(
             model_rnn.model, X_train, Y_train, X_test, Y_test,
             common_callbacks(folder, fname, model_rnn), epochs, batch_size
         )
 
-        # Evaluate and log
         preprocessing_functions.plot_model_history(history, folder)
         model_rnn.model_evaluation(model_rnn.model, np.concatenate([X_train, X_test]), np.concatenate([Y_train, Y_test]), X_test, Y_test)
         model_rnn.compute_metrics(model_rnn.model, X_test, Y_test)
 
-        # Log to MLflow
-        from mlflow.models.signature import infer_signature
-        sample_input = X_test[:5]
-        sample_predictions = model_rnn.model.predict(sample_input, verbose=0)
-        signature = infer_signature(sample_input, sample_predictions)
+        mlflow.register_model(f"runs:/{mlflow.active_run().info.run_id}/model", "RNN_OptunaTuned")
+        logger.info("✅ RNN model with Optuna optimization logged to MLflow registry")
 
-        mlflow.keras.log_model(
-            model=model_rnn.model, artifact_path="model", signature=signature,
-            registered_model_name="RNN_FailurePrediction"
-        )
-
-        test_loss, test_accuracy = model_rnn.model.evaluate(X_test, Y_test, verbose=0)
-        mlflow.log_params({
-            "model_architecture": "RNN", "sequence_length": N_TS, "n_features": N_FEAT,
-            "n_classes": N_CLS, "activation_function": activation_function, "epochs": epochs, "batch_size": batch_size
-        })
-        mlflow.log_metrics({"test_loss": test_loss, "test_accuracy": test_accuracy})
-
-        logger.info("✅ RNN model logged to MLflow registry")
-
-##################################
-# LONG SHORT TERM MEMORY
-##################################
 config_lstm = config["LSTM"]
 if config_lstm["enabled"]:
-    logger.info("🚀 Training LSTM model...")
+    logger.info("🚀 Training LSTM model with Optuna optimization...")
 
     with mlflow.start_run(run_name=f"{MLFLOW_RUN_NAME}_LSTM"):
-        # Model paths and parameters
+        best_params, study = OptunaHelper.optimize_model(
+            LongShortTermMemory, "LSTM", config_lstm,
+            X_train, Y_train, X_test, Y_test,
+            N_TS, N_FEAT, N_CLS, OPTUNA_N_TRIALS
+        )
+        
+        mlflow.log_params({f"optuna_{k}": v for k, v in best_params.items()})
+        mlflow.log_metric("optuna_best_accuracy", study.best_value)
+
+        activation_function = best_params["activation"]
+        hidden_units = best_params["hidden_units"]
+        batch_size = best_params["batch_size"]
+        learning_rate = best_params["learning_rate"]
+
         folder = os.path.join(OUTPUT_ROOT, config_lstm["name_parameters"]["folder_name"])
-        fname = config_lstm["name_parameters"]["model_name"].replace(".keras", "_feast.keras")
-
-        activation_function = config_lstm["model_parameters"]["activation_function"]
-        hidden_units = config_lstm["model_parameters"]["hidden_units"]
+        fname = config_lstm["name_parameters"]["model_name"].replace(".keras", "_optuna.keras")
         epochs = config_lstm["training_parameters"]["epochs"]
-        batch_size = config_lstm["training_parameters"]["batch_size"]
 
-        # Create and train model
         model_lstm = LongShortTermMemory(N_TS, N_FEAT, activation_function, hidden_units, N_CLS)
         model_lstm.create_model()
-        model_lstm.model_compilation(model_lstm.model)
+        
+        model_lstm.model.compile(
+            optimizer=model_lstm.model.optimizer.__class__(learning_rate=learning_rate),
+            loss=model_lstm.model.loss,
+            metrics=model_lstm.model.metrics
+        )
 
         history = model_lstm.model_fitting(
             model_lstm.model, X_train, Y_train, X_test, Y_test,
             common_callbacks(folder, fname, model_lstm), epochs, batch_size
         )
 
-        # Evaluate and log
         preprocessing_functions.plot_model_history(history, folder)
         model_lstm.model_evaluation(model_lstm.model, np.concatenate([X_train, X_test]), np.concatenate([Y_train, Y_test]), X_test, Y_test)
         model_lstm.compute_metrics(model_lstm.model, X_test, Y_test)
 
-        # Log to MLflow
-        from mlflow.models.signature import infer_signature
-        sample_input = X_test[:5]
-        sample_predictions = model_lstm.model.predict(sample_input, verbose=0)
-        signature = infer_signature(sample_input, sample_predictions)
+        mlflow.register_model(f"runs:/{mlflow.active_run().info.run_id}/model", "LSTM_OptunaTuned")
+        logger.info("✅ LSTM model with Optuna optimization logged to MLflow registry")
 
-        mlflow.keras.log_model(
-            model=model_lstm.model, artifact_path="model", signature=signature,
-            registered_model_name="LSTM_FailurePrediction"
-        )
-
-        test_loss, test_accuracy = model_lstm.model.evaluate(X_test, Y_test, verbose=0)
-        mlflow.log_params({
-            "model_architecture": "LSTM", "sequence_length": N_TS, "n_features": N_FEAT,
-            "n_classes": N_CLS, "activation_function": activation_function, "epochs": epochs, "batch_size": batch_size
-        })
-        mlflow.log_metrics({"test_loss": test_loss, "test_accuracy": test_accuracy})
-
-        logger.info("✅ LSTM model logged to MLflow registry")
-
-logger.info("🎉 All enabled models trained with Feast-sourced features and logged to MLflow!")
+logger.info("🎉 All enabled models trained with Optuna optimization and logged to MLflow!")

@@ -2,3 +2,7 @@
 /ideko/kubeflow/kubeflow-venv/
 
 *.keras
+
+ideko/MLFlow/.cursorignore
+
+ideko/MLFlow/CLAUDE.md

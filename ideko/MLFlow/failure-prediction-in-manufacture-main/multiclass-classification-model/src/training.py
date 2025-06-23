@@ -3,7 +3,6 @@ from feast import FeatureStore
 from helpers.logger import LoggerHelper, logging
 from helpers.config import ConfigHelper
 from helpers.data_helper import DataHelper
-from helpers.optuna_helper import OptunaHelper
 from classes import preprocessing_functions
 import mlflow
 import mlflow.keras
@@ -24,10 +23,6 @@ os.makedirs(OUTPUT_ROOT, exist_ok=True)
 
 # MLflow run configuration
 MLFLOW_RUN_NAME = "SystemMetricsLogTest"
-
-# Optuna configuration
-ENABLE_OPTUNA = True  # Set to False to skip optimization
-OPTUNA_N_TRIALS = 10  # Number of hyperparameter trials per model
 
 # Helper function to check class distribution at different stages
 def _check(label_arr, stage):
@@ -159,19 +154,6 @@ def common_callbacks(folder, fname, model_obj):
         model_obj.model_checkpoint_callback(os.path.join(folder, fname))
     ]
 
-def get_optimized_params(model_class, model_type, base_config):
-    """Get optimized parameters using Optuna or return base config"""
-    if ENABLE_OPTUNA:
-        best_params, study = OptunaHelper.optimize_model(
-            model_class, model_type, base_config, 
-            X_train, Y_train, X_test, Y_test,
-            N_TS, N_FEAT, N_CLS, OPTUNA_N_TRIALS
-        )
-        # Log study to MLflow
-        mlflow.log_params({f"optuna_{k}": v for k, v in best_params.items()})
-        mlflow.log_metric("optuna_best_accuracy", study.best_value)
-        return best_params
-    return None
 
 # === 6 · MODEL TRAINING ===
 
@@ -191,39 +173,19 @@ if config_nn["enabled"]:
         )
         mlflow.log_input(dataset, context="training")
 
-        # Get optimized parameters
-        optuna_params = get_optimized_params(NeuralNetwork, "NeuralNetwork", config_nn)
-        
-        # Use optimized parameters if available, else use config
-        if optuna_params:
-            activation_function = optuna_params.get("activation", config_nn["model_parameters"]["activation_function"])
-            units = optuna_params.get("units", config_nn["model_parameters"]["units"])
-            batch_size = optuna_params.get("batch_size", config_nn["training_parameters"]["batch_size"])
-            learning_rate = optuna_params.get("learning_rate", 0.001)
-        else:
-            activation_function = config_nn["model_parameters"]["activation_function"]
-            units = config_nn["model_parameters"]["units"]
-            batch_size = config_nn["training_parameters"]["batch_size"]
-            learning_rate = 0.001
-
         # Model paths and parameters
         folder = os.path.join(OUTPUT_ROOT, config_nn["name_parameters"]["folder_name"])
         fname = config_nn["name_parameters"]["model_name"].replace(".keras", "_feast.keras")
+
+        activation_function = config_nn["model_parameters"]["activation_function"]
+        units = config_nn["model_parameters"]["units"]
         epochs = config_nn["training_parameters"]["epochs"]
+        batch_size = config_nn["training_parameters"]["batch_size"]
 
         # Create and train model
         model_nn = NeuralNetwork(N_TS, N_FEAT, activation_function, units, N_CLS)
         model_nn.create_model()
-        
-        # Compile with optimized learning rate if available
-        if optuna_params:
-            model_nn.model.compile(
-                optimizer=model_nn.model.optimizer.__class__(learning_rate=learning_rate),
-                loss=model_nn.model.loss,
-                metrics=model_nn.model.metrics
-            )
-        else:
-            model_nn.model_compilation(model_nn.model)
+        model_nn.model_compilation(model_nn.model)
 
         history = model_nn.model_fitting(
             model_nn.model, X_train, Y_train, X_test, Y_test,
