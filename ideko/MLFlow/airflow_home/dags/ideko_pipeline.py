@@ -4,9 +4,9 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from airflow import DAG
-from airflow.operators.bash import BashOperator
-from airflow.operators.python import PythonOperator
-from airflow.operators.empty import EmptyOperator
+from airflow.providers.standard.operators.bash import BashOperator
+from airflow.providers.standard.operators.python import PythonOperator
+from airflow.providers.standard.operators.empty import EmptyOperator
 
 # ---------------------------------------------------------------------------
 # Paths & constants

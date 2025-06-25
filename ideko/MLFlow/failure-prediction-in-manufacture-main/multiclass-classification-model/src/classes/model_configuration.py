@@ -31,7 +31,7 @@ class ModelConfiguration():
             mode (str): ("min"/"max") if the minimum or maximum of the metric is wanted to reach
             patience (int): number of epochs with no improvement before stopping the training
 
-        Returns:
+        Returns:MLFlow
             Early stopping callback
         '''
 

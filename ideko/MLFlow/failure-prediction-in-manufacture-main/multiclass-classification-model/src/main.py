@@ -35,7 +35,20 @@ def _check(label_arr, stage):
     logger.info(f"[CHECK] {stage}: {dict(zip(uniques, counts))}")
 
 # === MLFLOW TRACKING SETUP ===
-mlflow.set_tracking_uri(uri="http://127.0.0.1:8080")
+# Try to connect to MLflow server, fallback to local tracking if needed
+import requests
+try:
+    # Test if server is accessible
+    response = requests.get("http://127.0.0.1:8081/health", timeout=5)
+    if response.status_code == 200:
+        mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
+        logger.info("✅ Connected to MLflow server at http://127.0.0.1:8081")
+    else:
+        raise Exception("Server not healthy")
+except:
+    # Fallback to local tracking
+    mlflow.set_tracking_uri(uri="./mlruns")
+    logger.info("⚠️ MLflow server not available, using local tracking in ./mlruns")
 
 # Enable MLflow autologging for TensorFlow/Keras (full autologging)
 mlflow.tensorflow.autolog(log_models=True, registered_model_name=None)
@@ -163,7 +176,7 @@ def get_optimized_params(model_class, model_type, base_config):
     """Get optimized parameters using Optuna or return base config"""
     if ENABLE_OPTUNA:
         best_params, study = OptunaHelper.optimize_model(
-            model_class, model_type, base_config, 
+            model_class, model_type, base_config,
             X_train, Y_train, X_test, Y_test,
             N_TS, N_FEAT, N_CLS, OPTUNA_N_TRIALS
         )
@@ -193,7 +206,7 @@ if config_nn["enabled"]:
 
         # Get optimized parameters
         optuna_params = get_optimized_params(NeuralNetwork, "NeuralNetwork", config_nn)
-        
+
         # Use optimized parameters if available, else use config
         if optuna_params:
             activation_function = optuna_params.get("activation", config_nn["model_parameters"]["activation_function"])
@@ -214,7 +227,7 @@ if config_nn["enabled"]:
         # Create and train model
         model_nn = NeuralNetwork(N_TS, N_FEAT, activation_function, units, N_CLS)
         model_nn.create_model()
-        
+
         # Compile with optimized learning rate if available
         if optuna_params:
             model_nn.model.compile(

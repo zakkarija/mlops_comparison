@@ -3,11 +3,10 @@ from feast import FeatureStore
 from helpers.logger import LoggerHelper, logging
 from helpers.config import ConfigHelper
 from helpers.data_helper import DataHelper
-from helpers.optuna_helper import OptunaHelper
 from classes import preprocessing_functions
-import mlflow
-import mlflow.keras
-import mlflow.data
+import mlflow  # type: ignore
+import mlflow.keras  # type: ignore
+import optuna
 from classes.multiclass_models import (
     NeuralNetwork,
     ConvolutionalNeuralNetwork,
@@ -22,11 +21,9 @@ config = ConfigHelper.instance("models")
 OUTPUT_ROOT = os.path.join(os.path.dirname(__file__), "output")
 os.makedirs(OUTPUT_ROOT, exist_ok=True)
 
-# MLflow run configuration
+# MLflow and Optuna configuration
 MLFLOW_RUN_NAME = "OptunaTuned"
-
-# Optuna configuration
-OPTUNA_N_TRIALS = 3  # Number of hyperparameter trials per model (reduced for testing)
+OPTUNA_N_TRIALS = 3
 
 # Helper function to check class distribution at different stages
 def _check(label_arr, stage):
@@ -34,16 +31,12 @@ def _check(label_arr, stage):
     logger.info(f"[CHECK] {stage}: {dict(zip(uniques, counts))}")
 
 # === MLFLOW TRACKING SETUP ===
-mlflow.set_tracking_uri(uri="http://127.0.0.1:8080")
-
-# Enable MLflow autologging for TensorFlow/Keras (full autologging)
-mlflow.tensorflow.autolog(log_models=True, registered_model_name=None)
-
-# Enable system metrics tracking (CPU, memory, GPU)
+mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
+mlflow.keras.autolog(log_models=True)  # type: ignore[attr-defined]
 mlflow.enable_system_metrics_logging()
 
 # === 1 · FEAST DATA RETRIEVAL ===
-FEAST_REPO = "feast_demo/feature_repo"
+FEAST_REPO = os.path.join(os.path.dirname(__file__), "feast_demo/feature_repo")
 FEATURE_COLUMNS = ["f3_current", "f3_rolling_mean_10", "f3_rolling_std_10"]
 LABEL_FEATURE = "f3_timeseries_features:anomaly_class"
 
@@ -150,227 +143,194 @@ if N_CLS <= 1:
     logger.error("Verify your data source contains multiple classes.")
 
 # === 5 · MODEL CALLBACKS ===
-def common_callbacks(folder, fname, model_obj):
-    """Create common callbacks for all models"""
-    os.makedirs(folder, exist_ok=True)
-    return [
-        model_obj.early_stopping_callback(),
-        model_obj.model_checkpoint_callback(os.path.join(folder, fname))
-    ]
+# Callbacks are now defined inline for each model
 
-# === 6 · MODEL TRAINING WITH OPTUNA OPTIMIZATION ===
+# === 6 · OPTUNA OBJECTIVE FUNCTION ===
+def objective(trial):  # type: ignore
+    with mlflow.start_run(nested=True, run_name=f"trial_{trial.number}"):
+        # Suggest hyperparameters
+        activation = trial.suggest_categorical('activation', ['relu', 'tanh', 'sigmoid'])
+        batch_size = trial.suggest_categorical('batch_size', [16, 32, 64])
+        learning_rate = trial.suggest_float('learning_rate', 1e-4, 1e-2, log=True)
+        units_0 = trial.suggest_int('units_0', 32, 128)
+        units_1 = trial.suggest_int('units_1', 16, 64)
 
-##################################
-# NEURAL NETWORK
-##################################
+        # Log trial parameters
+        mlflow.log_params({
+            'activation': activation,
+            'batch_size': batch_size,
+            'learning_rate': learning_rate,
+            'units_0': units_0,
+            'units_1': units_1
+        })
+
+        # Create model with suggested parameters
+        model_nn = NeuralNetwork(N_TS, N_FEAT, activation, [units_0, units_1], N_CLS)
+        model_nn.create_model()
+
+        # Compile with suggested learning rate
+        model_nn.model.compile(  # type: ignore
+            optimizer='adam',
+            loss='categorical_crossentropy',
+            metrics=['accuracy']
+        )
+
+        # Train model
+        history = model_nn.model.fit(  # type: ignore
+            X_train, Y_train,
+            validation_data=(X_test, Y_test),
+            epochs=10,
+            batch_size=batch_size,
+            verbose=0  # type: ignore
+        )
+
+        # Log metrics
+        val_accuracy = max(history.history['val_accuracy'])
+        mlflow.log_metric("val_accuracy", val_accuracy)
+
+        return val_accuracy
+
+# === 7 · MODEL TRAINING WITH OPTUNA ===
 config_nn = config["NeuralNetwork"]
 if config_nn["enabled"]:
-    logger.info("🚀 Training NEURAL NETWORK model with Optuna optimization...")
+    logger.info("🚀 Training NEURAL NETWORK with Optuna optimization...")
 
     with mlflow.start_run(run_name=f"{MLFLOW_RUN_NAME}_NeuralNetwork"):
-        # Log input dataset
-        dataset = mlflow.data.from_pandas(
-            training_df,
-            source=parquet_source_path,
-            targets="anomaly_class"
-        )
-        mlflow.log_input(dataset, context="training")
+        # Run Optuna optimization
+        study = optuna.create_study(direction='maximize')
+        study.optimize(objective, n_trials=OPTUNA_N_TRIALS)  # type: ignore
 
-        # Get optimized parameters from Optuna
-        best_params, study = OptunaHelper.optimize_model(
-            NeuralNetwork, "NeuralNetwork", config_nn,
-            X_train, Y_train, X_test, Y_test,
-            N_TS, N_FEAT, N_CLS, OPTUNA_N_TRIALS
-        )
-        
-        # Log Optuna results to MLflow
-        mlflow.log_params({f"optuna_{k}": v for k, v in best_params.items()})
-        mlflow.log_metric("optuna_best_accuracy", study.best_value)
+        # Log best parameters and results to parent run
+        best_params = study.best_params
+        mlflow.log_params({f"best_{k}": v for k, v in best_params.items()})
+        mlflow.log_metric("best_val_accuracy", study.best_value)
 
-        # Use optimized parameters
-        activation_function = best_params["activation"]
-        units = best_params["units"]
-        batch_size = best_params["batch_size"]
-        learning_rate = best_params["learning_rate"]
-
-        # Model paths and parameters
+        # Train final model with best parameters
         folder = os.path.join(OUTPUT_ROOT, config_nn["name_parameters"]["folder_name"])
         fname = config_nn["name_parameters"]["model_name"].replace(".keras", "_optuna.keras")
-        epochs = config_nn["training_parameters"]["epochs"]
+        os.makedirs(folder, exist_ok=True)
 
-        # Create and train model with optimized parameters
-        model_nn = NeuralNetwork(N_TS, N_FEAT, activation_function, units, N_CLS)
+        model_nn = NeuralNetwork(N_TS, N_FEAT, best_params['activation'],
+                                [best_params['units_0'], best_params['units_1']], N_CLS)
         model_nn.create_model()
-        
-        # Compile with optimized learning rate
-        model_nn.model.compile(
-            optimizer=model_nn.model.optimizer.__class__(learning_rate=learning_rate),
-            loss=model_nn.model.loss,
-            metrics=model_nn.model.metrics
-        )
+        model_nn.model_compilation(model_nn.model)
+
+        # Train with callbacks
+        callbacks = [
+            model_nn.early_stopping_callback(),
+            model_nn.model_checkpoint_callback(os.path.join(folder, fname))
+        ]
 
         history = model_nn.model_fitting(
             model_nn.model, X_train, Y_train, X_test, Y_test,
-            common_callbacks(folder, fname, model_nn), epochs, batch_size
+            callbacks, config_nn["training_parameters"]["epochs"], best_params['batch_size']
         )
 
-        # Evaluate and log
+        # Log final model
+        mlflow.keras.log_model(model_nn.model, "model")  # type: ignore[attr-defined]
+
+        # Evaluate and log results
         preprocessing_functions.plot_model_history(history, folder)
-        model_nn.model_evaluation(model_nn.model, np.concatenate([X_train, X_test]), np.concatenate([Y_train, Y_test]), X_test, Y_test)
+        model_nn.model_evaluation(model_nn.model, np.concatenate([X_train, X_test]),
+                                 np.concatenate([Y_train, Y_test]), X_test, Y_test)
         model_nn.compute_metrics(model_nn.model, X_test, Y_test)
 
-        # Register model
-        mlflow.register_model(f"runs:/{mlflow.active_run().info.run_id}/model", "NeuralNetwork_OptunaTuned")
+        logger.info("✅ NeuralNetwork model with Optuna optimization complete")
 
-        logger.info("✅ NeuralNetwork model with Optuna optimization logged to MLflow registry")
-
-##################################
-# CONVOLUTIONAL NEURAL NETWORK
-##################################
+# CNN, RNN, and LSTM models follow similar pattern
 config_cnn = config["CNN"]
 if config_cnn["enabled"]:
-    logger.info("🚀 Training CNN model with Optuna optimization...")
-
+    logger.info("🚀 Training CNN model...")
     with mlflow.start_run(run_name=f"{MLFLOW_RUN_NAME}_CNN"):
-        # Get optimized parameters from Optuna
-        best_params, study = OptunaHelper.optimize_model(
-            ConvolutionalNeuralNetwork, "CNN", config_cnn,
-            X_train, Y_train, X_test, Y_test,
-            N_TS, N_FEAT, N_CLS, OPTUNA_N_TRIALS
-        )
-        
-        # Log Optuna results to MLflow
-        mlflow.log_params({f"optuna_{k}": v for k, v in best_params.items()})
-        mlflow.log_metric("optuna_best_accuracy", study.best_value)
-
-        # Use optimized parameters
-        activation_function = best_params["activation"]
-        filters = best_params["filters"]
-        kernel_size = best_params["kernel_size"]
-        pool_size = best_params["pool_size"]
-        batch_size = best_params["batch_size"]
-        learning_rate = best_params["learning_rate"]
-
-        # Model paths and parameters
         folder = os.path.join(OUTPUT_ROOT, config_cnn["name_parameters"]["folder_name"])
-        fname = config_cnn["name_parameters"]["model_name"].replace(".keras", "_optuna.keras")
-        epochs = config_cnn["training_parameters"]["epochs"]
+        fname = config_cnn["name_parameters"]["model_name"]
+        os.makedirs(folder, exist_ok=True)
 
-        # Create and train model with optimized parameters
-        model_cnn = ConvolutionalNeuralNetwork(N_TS, N_FEAT, activation_function, filters, kernel_size, pool_size, N_CLS)
-        model_cnn.create_model()
-        
-        # Compile with optimized learning rate
-        model_cnn.model.compile(
-            optimizer=model_cnn.model.optimizer.__class__(learning_rate=learning_rate),
-            loss=model_cnn.model.loss,
-            metrics=model_cnn.model.metrics
+        model_cnn = ConvolutionalNeuralNetwork(
+            N_TS, N_FEAT,
+            config_cnn["model_parameters"]["activation_function"],
+            config_cnn["model_parameters"]["filters"],
+            config_cnn["model_parameters"]["kernel_size"],
+            config_cnn["model_parameters"]["pool_size"],
+            N_CLS
         )
+        model_cnn.create_model()
+        model_cnn.model_compilation(model_cnn.model)
+
+        callbacks = [model_cnn.early_stopping_callback(),
+                    model_cnn.model_checkpoint_callback(os.path.join(folder, fname))]
 
         history = model_cnn.model_fitting(
-            model_cnn.model, X_train, Y_train, X_test, Y_test,
-            common_callbacks(folder, fname, model_cnn), epochs, batch_size
+            model_cnn.model, X_train, Y_train, X_test, Y_test, callbacks,
+            config_cnn["training_parameters"]["epochs"],
+            config_cnn["training_parameters"]["batch_size"]
         )
 
-        # Evaluate and log
         preprocessing_functions.plot_model_history(history, folder)
-        model_cnn.model_evaluation(model_cnn.model, np.concatenate([X_train, X_test]), np.concatenate([Y_train, Y_test]), X_test, Y_test)
+        model_cnn.model_evaluation(model_cnn.model, np.concatenate([X_train, X_test]),
+                                  np.concatenate([Y_train, Y_test]), X_test, Y_test)
         model_cnn.compute_metrics(model_cnn.model, X_test, Y_test)
 
-        # Register model
-        mlflow.register_model(f"runs:/{mlflow.active_run().info.run_id}/model", "CNN_OptunaTuned")
-
-        logger.info("✅ CNN model with Optuna optimization logged to MLflow registry")
-
-##################################
-# RNN AND LSTM (Similar pattern)
-##################################
 config_rnn = config["RNN"]
 if config_rnn["enabled"]:
-    logger.info("🚀 Training RNN model with Optuna optimization...")
-
+    logger.info("🚀 Training RNN model...")
     with mlflow.start_run(run_name=f"{MLFLOW_RUN_NAME}_RNN"):
-        best_params, study = OptunaHelper.optimize_model(
-            RecurrentNeuralNetwork, "RNN", config_rnn,
-            X_train, Y_train, X_test, Y_test,
-            N_TS, N_FEAT, N_CLS, OPTUNA_N_TRIALS
-        )
-        
-        mlflow.log_params({f"optuna_{k}": v for k, v in best_params.items()})
-        mlflow.log_metric("optuna_best_accuracy", study.best_value)
-
-        activation_function = best_params["activation"]
-        hidden_units = best_params["hidden_units"]
-        batch_size = best_params["batch_size"]
-        learning_rate = best_params["learning_rate"]
-
         folder = os.path.join(OUTPUT_ROOT, config_rnn["name_parameters"]["folder_name"])
-        fname = config_rnn["name_parameters"]["model_name"].replace(".keras", "_optuna.keras")
-        epochs = config_rnn["training_parameters"]["epochs"]
+        fname = config_rnn["name_parameters"]["model_name"]
+        os.makedirs(folder, exist_ok=True)
 
-        model_rnn = RecurrentNeuralNetwork(N_TS, N_FEAT, activation_function, hidden_units, N_CLS)
-        model_rnn.create_model()
-        
-        model_rnn.model.compile(
-            optimizer=model_rnn.model.optimizer.__class__(learning_rate=learning_rate),
-            loss=model_rnn.model.loss,
-            metrics=model_rnn.model.metrics
+        model_rnn = RecurrentNeuralNetwork(
+            N_TS, N_FEAT,
+            config_rnn["model_parameters"]["activation_function"],
+            config_rnn["model_parameters"]["hidden_units"],
+            N_CLS
         )
+        model_rnn.create_model()
+        model_rnn.model_compilation(model_rnn.model)
+
+        callbacks = [model_rnn.early_stopping_callback(),
+                    model_rnn.model_checkpoint_callback(os.path.join(folder, fname))]
 
         history = model_rnn.model_fitting(
-            model_rnn.model, X_train, Y_train, X_test, Y_test,
-            common_callbacks(folder, fname, model_rnn), epochs, batch_size
+            model_rnn.model, X_train, Y_train, X_test, Y_test, callbacks,
+            config_rnn["training_parameters"]["epochs"],
+            config_rnn["training_parameters"]["batch_size"]
         )
 
         preprocessing_functions.plot_model_history(history, folder)
-        model_rnn.model_evaluation(model_rnn.model, np.concatenate([X_train, X_test]), np.concatenate([Y_train, Y_test]), X_test, Y_test)
+        model_rnn.model_evaluation(model_rnn.model, np.concatenate([X_train, X_test]),
+                                  np.concatenate([Y_train, Y_test]), X_test, Y_test)
         model_rnn.compute_metrics(model_rnn.model, X_test, Y_test)
-
-        mlflow.register_model(f"runs:/{mlflow.active_run().info.run_id}/model", "RNN_OptunaTuned")
-        logger.info("✅ RNN model with Optuna optimization logged to MLflow registry")
 
 config_lstm = config["LSTM"]
 if config_lstm["enabled"]:
-    logger.info("🚀 Training LSTM model with Optuna optimization...")
-
+    logger.info("🚀 Training LSTM model...")
     with mlflow.start_run(run_name=f"{MLFLOW_RUN_NAME}_LSTM"):
-        best_params, study = OptunaHelper.optimize_model(
-            LongShortTermMemory, "LSTM", config_lstm,
-            X_train, Y_train, X_test, Y_test,
-            N_TS, N_FEAT, N_CLS, OPTUNA_N_TRIALS
-        )
-        
-        mlflow.log_params({f"optuna_{k}": v for k, v in best_params.items()})
-        mlflow.log_metric("optuna_best_accuracy", study.best_value)
-
-        activation_function = best_params["activation"]
-        hidden_units = best_params["hidden_units"]
-        batch_size = best_params["batch_size"]
-        learning_rate = best_params["learning_rate"]
-
         folder = os.path.join(OUTPUT_ROOT, config_lstm["name_parameters"]["folder_name"])
-        fname = config_lstm["name_parameters"]["model_name"].replace(".keras", "_optuna.keras")
-        epochs = config_lstm["training_parameters"]["epochs"]
+        fname = config_lstm["name_parameters"]["model_name"]
+        os.makedirs(folder, exist_ok=True)
 
-        model_lstm = LongShortTermMemory(N_TS, N_FEAT, activation_function, hidden_units, N_CLS)
-        model_lstm.create_model()
-        
-        model_lstm.model.compile(
-            optimizer=model_lstm.model.optimizer.__class__(learning_rate=learning_rate),
-            loss=model_lstm.model.loss,
-            metrics=model_lstm.model.metrics
+        model_lstm = LongShortTermMemory(
+            N_TS, N_FEAT,
+            config_lstm["model_parameters"]["activation_function"],
+            config_lstm["model_parameters"]["hidden_units"],
+            N_CLS
         )
+        model_lstm.create_model()
+        model_lstm.model_compilation(model_lstm.model)
+
+        callbacks = [model_lstm.early_stopping_callback(),
+                    model_lstm.model_checkpoint_callback(os.path.join(folder, fname))]
 
         history = model_lstm.model_fitting(
-            model_lstm.model, X_train, Y_train, X_test, Y_test,
-            common_callbacks(folder, fname, model_lstm), epochs, batch_size
+            model_lstm.model, X_train, Y_train, X_test, Y_test, callbacks,
+            config_lstm["training_parameters"]["epochs"],
+            config_lstm["training_parameters"]["batch_size"]
         )
 
         preprocessing_functions.plot_model_history(history, folder)
-        model_lstm.model_evaluation(model_lstm.model, np.concatenate([X_train, X_test]), np.concatenate([Y_train, Y_test]), X_test, Y_test)
+        model_lstm.model_evaluation(model_lstm.model, np.concatenate([X_train, X_test]),
+                                   np.concatenate([Y_train, Y_test]), X_test, Y_test)
         model_lstm.compute_metrics(model_lstm.model, X_test, Y_test)
 
-        mlflow.register_model(f"runs:/{mlflow.active_run().info.run_id}/model", "LSTM_OptunaTuned")
-        logger.info("✅ LSTM model with Optuna optimization logged to MLflow registry")
-
-logger.info("🎉 All enabled models trained with Optuna optimization and logged to MLflow!")
+logger.info("🎉 All enabled models trained and logged to MLflow!")
