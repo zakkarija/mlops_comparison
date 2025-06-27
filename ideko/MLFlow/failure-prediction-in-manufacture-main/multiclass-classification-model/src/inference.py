@@ -8,7 +8,7 @@ from helpers.inference_helper import load_random_inference_data, preprocess_for_
 
 def load_model_from_mlflow(model_arch, logger):
     """Load model from MLflow using keras flavor."""
-    mlflow.set_tracking_uri(uri="http://127.0.0.1:8080")
+    mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
 
     try:
         model_name = f"{model_arch}_FailurePrediction"
@@ -45,7 +45,7 @@ def run_inference():
     logger.info(f"Using model architecture: {MODEL_ARCH}")
 
     # Start MLflow tracking for inference
-    mlflow.set_tracking_uri(uri="http://127.0.0.1:8080")
+    mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
 
     # Enable system metrics for inference runs
     mlflow.enable_system_metrics_logging()

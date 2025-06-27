@@ -113,7 +113,7 @@ with DAG(
         cwd=SRC_PATH,
         bash_command="""
             echo '🤖 Training model …' && \
-            python main_poc.py && \
+            python training.py && \
             echo '✅ Training done.'
         """,
     )

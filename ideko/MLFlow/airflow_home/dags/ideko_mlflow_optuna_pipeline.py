@@ -21,7 +21,7 @@ SRC_PATH        = os.path.join(MODEL_ROOT, "src")
 FEAST_REPO_PATH = os.path.join(SRC_PATH, "feast_demo", "feature_repo")
 
 DAG_ID      = "ideko_mlflow_optuna_pipeline"
-DESCRIPTION = "ML pipeline with MLflow tracking and Optuna hyperparameter optimization"
+DESCRIPTION = "ML pipeline with MLflow + Optuna for Ideko manufacturing multiclass anomaly detection"
 
 DEFAULT_ARGS = {
     "owner": "ideko-data-team",
@@ -30,6 +30,7 @@ DEFAULT_ARGS = {
     "email_on_retry": False,
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
+    "execution_timeout": timedelta(minutes=30),  # Increase timeout for training
 }
 
 with DAG(
@@ -42,22 +43,8 @@ with DAG(
     catchup=False,
     default_args=DEFAULT_ARGS,
     max_active_runs=1,
-    tags=["ml","manufacturing","anomaly-detection","multiclass","feast","dvc","mlflow","optuna"],
+    tags=["ml","manufacturing","anomaly-detection","multiclass","feast","dvc","optuna","mlflow"],
 ) as dag:
-
-    # 0 ─────────────────────────────────────────────── MLflow server check
-    check_mlflow_server = BashOperator(
-        task_id="check_mlflow_server",
-        bash_command="""
-            echo '🔍 Checking MLflow server status...' && \
-            if curl -f http://127.0.0.1:8081/health 2>/dev/null; then
-                echo '✅ MLflow server is running'
-            else
-                echo '⚠️  MLflow server not running - please start with: mlflow server --host 127.0.0.1 --port 8081'
-                exit 1
-            fi
-        """,
-    )
 
     # 1 ─────────────────────────────────────────────── DVC pull
     dvc_pull_data = BashOperator(
@@ -121,120 +108,53 @@ with DAG(
         """,
     )
 
-    # 5 ────────────────────────────────────── MLflow experiment setup
-    setup_mlflow_experiment = BashOperator(
-        task_id="setup_mlflow_experiment",
+    # 5 ────────────────────────────────────── model training with Optuna + MLflow
+    train_model = BashOperator(
+        task_id="train_multiclass_model_optuna",
         cwd=SRC_PATH,
+        execution_timeout=timedelta(minutes=45),  # Extended timeout for ML training
         bash_command="""
-            echo '🧪 Setting up MLflow experiment...' && \
-            python -c "
-import mlflow
-mlflow.set_tracking_uri('http://127.0.0.1:8081')
-experiment_name = 'ideko_manufacturing_anomaly_detection'
-try:
-    experiment = mlflow.get_experiment_by_name(experiment_name)
-    if experiment is None:
-        experiment_id = mlflow.create_experiment(experiment_name)
-        print(f'Created experiment: {experiment_name} (ID: {experiment_id})')
-    else:
-        print(f'Using existing experiment: {experiment_name} (ID: {experiment.experiment_id})')
-        mlflow.set_experiment(experiment_name)
-except Exception as e:
-    print(f'Error setting up experiment: {e}')
-    exit(1)
-" && \
-            echo '✅ MLflow experiment setup complete.'
-        """,
-    )
-
-    # 6 ────────────────────────────────────── model training with MLflow + Optuna
-    train_model_with_optuna = BashOperator(
-        task_id="train_model_with_mlflow_optuna",
-        cwd=SRC_PATH,
-        bash_command="""
-            echo '🤖 Training models with MLflow tracking and Optuna optimization…' && \
+            echo '🤖 Training model with Optuna + MLflow (port 8081) …' && \
+            echo 'Current directory:' $(pwd) && \
+            echo 'Python version:' $(python --version) && \
+            echo 'Python executable:' $(which python) && \
+            ls -la training_optuna.py && \
+            export FEAST_USAGE=False && \
+            export FEAST_TELEMETRY=False && \
             python training_optuna.py && \
-            echo '✅ Training with MLflow + Optuna complete.'
+            echo '✅ Training done.'
         """,
     )
 
-    # 7 ───────────────────────────────────── MLflow metrics collection
-    def collect_mlflow_metrics() -> None:
-        """Collect and display MLflow experiment metrics"""
-        import mlflow
-        
-        mlflow.set_tracking_uri("http://127.0.0.1:8081")
-        
-        try:
-            # Get recent runs
-            runs = mlflow.search_runs(
-                experiment_names=["ideko_manufacturing_anomaly_detection"],
-                max_results=10,
-                order_by=["start_time DESC"]
-            )
-            
-            if len(runs) > 0:
-                print("📊 Recent MLflow runs:")
-                for idx, run in runs.iterrows():
-                    status = run.get('status', 'UNKNOWN')
-                    run_id = run.get('run_id', 'N/A')[:8]
-                    print(f"  - Run {run_id}: {status}")
-                
-                print(f"✅ Found {len(runs)} total runs in experiment")
-            else:
-                print("⚠️  No runs found in MLflow experiment")
-                
-        except Exception as e:
-            print(f"❌ Error accessing MLflow: {e}")
-
-    collect_mlflow_metrics_task = PythonOperator(
-        task_id="collect_mlflow_metrics",
-        python_callable=collect_mlflow_metrics,
-    )
-
-    # 8 ───────────────────────────────────── local artifact collection
-    def collect_local_artifacts() -> None:
-        """Collect local training artifacts"""
+    # 6 ───────────────────────────────────── metric collection (Python)
+    def collect_metrics() -> None:
         out_dir = os.path.join(SRC_PATH, "output")
         if not os.path.isdir(out_dir):
             print("❌ output/ not found – training may have failed.")
             return
-        
         files = os.listdir(out_dir)
-        print("📦 Local artifacts:", files)
-        
-        # Count model files
-        model_files = []
-        for root, dirs, files in os.walk(out_dir):
-            for file in files:
-                if file.endswith(".keras"):
-                    model_files.append(os.path.join(root, file))
-        
+        print("📊  artifacts:", files)
+        model_files = [f for f in files if f.endswith(".keras")]
         if model_files:
-            print(f"✅ Found {len(model_files)} model files:")
-            for model_file in model_files:
-                print(f"  - {model_file}")
+            print("✅ model:", model_files[0])
         else:
-            print("⚠️  No .keras model files found.")
+            print("⚠️  no .keras model saved.")
 
-    collect_local_artifacts_task = PythonOperator(
-        task_id="collect_local_artifacts",
-        python_callable=collect_local_artifacts,
+    collect_metrics_task = PythonOperator(
+        task_id="collect_model_metrics",
+        python_callable=collect_metrics,
     )
 
-    # 9-10-11 ────────────────────────── package → dvc add → dvc push
+    # 7-8-9 ────────────────────────── package → dvc add → dvc push
     package_artifacts = BashOperator(
         task_id="package_artifacts",
         cwd=MODEL_ROOT,
         bash_command="""
-            echo '📦 Packaging artifacts...' && \
             mkdir -p artifacts/{models,features,plots} && \
-            find src/output -name "*.keras" -exec cp {} artifacts/models/ \\; 2>/dev/null || true && \
-            find src/output -name "*.png" -exec cp {} artifacts/plots/ \\; 2>/dev/null || true && \
+            cp -f src/output/*.keras artifacts/models/ 2>/dev/null || true && \
+            cp -f src/output/*.png   artifacts/plots/  2>/dev/null || true && \
             cp -f src/feast_demo/feature_repo/data/offline/*.parquet artifacts/features/ 2>/dev/null || true && \
-            echo "📊 Packaged artifacts:" && \
-            find artifacts -type f | wc -l && \
-            echo '✅ Artifacts packaged.'
+            echo '📦  artifacts packaged.'
         """,
     )
 
@@ -242,9 +162,8 @@ except Exception as e:
         task_id="dvc_add_artifacts",
         cwd=MODEL_ROOT,
         bash_command="""
-            echo '📝 Adding artifacts to DVC...' && \
             dvc add artifacts && \
-            echo '✅ DVC add done.'
+            echo '📝 dvc add done.'
         """,
     )
 
@@ -252,41 +171,24 @@ except Exception as e:
         task_id="dvc_push",
         cwd=MODEL_ROOT,
         bash_command="""
-            echo '⬆️  Pushing to DVC remote...' && \
             dvc push && \
-            echo '✅ DVC push complete.'
+            echo '⬆️  dvc push complete.'
         """,
-    )
-
-    # 12 ────────────────────────────────────── success summary
-    def pipeline_summary() -> None:
-        """Print pipeline completion summary"""
-        print("🎉 MLflow + Optuna Pipeline Complete!")
-        print("📊 Check MLflow UI at: http://127.0.0.1:8081")
-        print("📈 View experiment: ideko_manufacturing_anomaly_detection")
-        print("✅ All models trained with hyperparameter optimization")
-
-    pipeline_summary_task = PythonOperator(
-        task_id="pipeline_summary",
-        python_callable=pipeline_summary,
     )
 
     done = EmptyOperator(task_id="pipeline_success")
 
     # ───────────────────────────────── dependency graph
     (
-        check_mlflow_server
-        >> dvc_pull_data
+        dvc_pull_data
         >> validate_data_structure
         >> convert_to_feast
         >> feast_apply
         >> validate_feast
-        >> setup_mlflow_experiment
-        >> train_model_with_optuna
-        >> [collect_mlflow_metrics_task, collect_local_artifacts_task]
+        >> train_model
+        >> collect_metrics_task
         >> package_artifacts
         >> dvc_add_artifacts
         >> dvc_push
-        >> pipeline_summary_task
         >> done
     )

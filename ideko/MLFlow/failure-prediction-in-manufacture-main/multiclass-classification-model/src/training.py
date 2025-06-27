@@ -30,7 +30,7 @@ def _check(label_arr, stage):
     logger.info(f"[CHECK] {stage}: {dict(zip(uniques, counts))}")
 
 # === MLFLOW TRACKING SETUP ===
-mlflow.set_tracking_uri(uri="http://127.0.0.1:8080")
+mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
 
 # Enable MLflow autologging for TensorFlow/Keras (full autologging)
 mlflow.tensorflow.autolog(log_models=True, registered_model_name=None)
