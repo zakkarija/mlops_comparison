@@ -336,3 +336,11 @@ environment.yml
 .env.*
 docker-compose.override.yml
 /ideko/kubeflow/kubeflow-venv/
+
+.idea/inspectionProfiles/Project_Default.xml
+
+ideko/MLFlow/.cursorignore
+
+ideko/MLFlow/.vscode/settings.json
+
+ideko/MLFlow/failure-prediction-in-manufacture-main/multiclass-classification-model/src/feast_demo/feature_repo/data/offline/f3_timeseries.parquet
