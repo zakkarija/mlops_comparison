@@ -1,0 +1,263 @@
+# PIPELINE DEFINITION
+# Name: ideko-ml-training
+# Description: Simple ML training pipeline: git clone -> dvc pull -> train
+# Inputs:
+#    branch: str [Default: 'kubeflow']
+#    model_type: str [Default: 'NeuralNetwork']
+#    repo_url: str [Default: 'https://github.com/zakmic/mlops_comparison.git']
+components:
+  comp-dvc-pull-component:
+    executorLabel: exec-dvc-pull-component
+    inputDefinitions:
+      artifacts:
+        code_input:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        project_output:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+  comp-git-clone-component:
+    executorLabel: exec-git-clone-component
+    inputDefinitions:
+      parameters:
+        branch:
+          parameterType: STRING
+        repo_url:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        code_output:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+  comp-train-model-component:
+    executorLabel: exec-train-model-component
+    inputDefinitions:
+      artifacts:
+        project_input:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+      parameters:
+        model_type:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        trained_model:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+deploymentSpec:
+  executors:
+    exec-dvc-pull-component:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - dvc_pull_component
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.7.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'dvc[s3]==3.48.4'\
+          \ && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef dvc_pull_component(\n    code_input: Input[Artifact],\n    project_output:\
+          \ Output[Artifact]\n) -> None:\n    \"\"\"Pull data using DVC - data goes\
+          \ directly to project/data/ folder\"\"\"\n    import subprocess\n    import\
+          \ shutil\n    import os\n\n    print(\"\U0001F4E5 Running DVC pull...\"\
+          )\n\n    try:\n        # Copy entire project to output (so we have code\
+          \ + data together)\n        shutil.copytree(code_input.path, project_output.path)\n\
+          \n        # Change to the project directory (cloned repo root is mlops_comparison)\n\
+          \        project_path = os.path.join(project_output.path, \"ideko/kubeflow/multiclass-classification-model\"\
+          )\n\n        # Debug: Check what actually got cloned\n        print(\"\U0001F4C2\
+          \ Checking cloned repository structure:\")\n        for item in os.listdir(project_output.path):\n\
+          \            print(f\"  - {item}\")\n\n        if not os.path.exists(project_path):\n\
+          \            print(f\"\u26A0\uFE0F Expected path not found: {project_path}\"\
+          )\n            print(\"Looking for DVC files in cloned repo...\")\n\n  \
+          \          # Search for .dvc files in the cloned repo\n            for root,\
+          \ dirs, files in os.walk(project_output.path):\n                for file\
+          \ in files:\n                    if file.endswith('.dvc'):\n           \
+          \             found_dvc_dir = root\n                        print(f\"\u2705\
+          \ Found DVC file at: {found_dvc_dir}\")\n                        project_path\
+          \ = found_dvc_dir\n                        break\n                if 'project_path'\
+          \ in locals():\n                    break\n\n        print(f\"\U0001F4CD\
+          \ Using project path: {project_path}\")\n        os.chdir(project_path)\n\
+          \n        # Run DVC pull - this will automatically pull to data/ folder\n\
+          \        result = subprocess.run(\n            [\"dvc\", \"pull\"], \n \
+          \           check=True, \n            capture_output=True, \n          \
+          \  text=True\n        )\n\n        print(\"\u2705 DVC pull completed successfully\"\
+          )\n        print(result.stdout)\n\n        # Verify data exists\n      \
+          \  data_dir = os.path.join(project_path, \"data\")\n        if os.path.exists(data_dir):\n\
+          \            print(f\"\u2705 Data available at: {data_dir}\")\n        \
+          \    # List contents for verification\n            for item in os.listdir(data_dir)[:5]:\
+          \  # Show first 5 items\n                print(f\"  - {item}\")\n      \
+          \  else:\n            print(\"\u26A0\uFE0F No data directory found after\
+          \ DVC pull\")\n\n    except subprocess.CalledProcessError as e:\n      \
+          \  print(f\"\u274C DVC pull failed: {e}\")\n        print(f\"Stderr: {e.stderr}\"\
+          )\n        raise\n    except Exception as e:\n        print(f\"\u274C Error:\
+          \ {e}\")\n        raise\n\n"
+        image: python:3.11-slim
+    exec-git-clone-component:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - git_clone_component
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.7.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'GitPython==3.1.40'\
+          \ && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef git_clone_component(\n    repo_url: str,\n    branch: str,\n\
+          \    code_output: Output[Artifact]\n) -> None:\n    \"\"\"Clone git repository\"\
+          \"\"\n    import git\n    import os\n\n    print(f\"\U0001F4E5 Cloning {repo_url}\
+          \ (branch: {branch})\")\n\n    try:\n        # Clone to output path\n  \
+          \      git.Repo.clone_from(\n            repo_url, \n            code_output.path,\n\
+          \            branch=branch,\n            depth=1  # Shallow clone for speed\n\
+          \        )\n        print(\"\u2705 Git clone completed successfully\")\n\
+          \n    except Exception as e:\n        print(f\"\u274C Git clone failed:\
+          \ {e}\")\n        raise\n\n"
+        image: python:3.11-slim
+    exec-train-model-component:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - train_model_component
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.7.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'tensorflow==2.16.1'\
+          \ 'scikit-learn==1.4.2' 'matplotlib==3.8.4' 'pyyaml==6.0.1' 'numpy==1.26.4'\
+          \ 'pandas==2.2.2' 'keras==3.2.1' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef train_model_component(\n    project_input: Input[Artifact],\n\
+          \    model_type: str,\n    trained_model: Output[Model]\n) -> None:\n  \
+          \  \"\"\"Simple training: just run python main.py\"\"\"\n    import subprocess\n\
+          \    import os\n\n    print(f\"\U0001F680 Running python main.py for model:\
+          \ {model_type}\")\n\n    # Change to the src directory where main.py is\
+          \ located\n    src_path = os.path.join(project_input.path, \"ideko/kubeflow/multiclass-classification-model/src\"\
+          )\n    os.chdir(src_path)\n\n    # Run main.py directly\n    subprocess.run([\"\
+          python\", \"main.py\"], check=True)\n\n"
+        image: python:3.11-slim
+pipelineInfo:
+  description: 'Simple ML training pipeline: git clone -> dvc pull -> train'
+  name: ideko-ml-training
+root:
+  dag:
+    tasks:
+      dvc-pull-component:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-dvc-pull-component
+        dependentTasks:
+        - git-clone-component
+        inputs:
+          artifacts:
+            code_input:
+              taskOutputArtifact:
+                outputArtifactKey: code_output
+                producerTask: git-clone-component
+        taskInfo:
+          name: dvc-pull-component
+      git-clone-component:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-git-clone-component
+        inputs:
+          parameters:
+            branch:
+              componentInputParameter: branch
+            repo_url:
+              componentInputParameter: repo_url
+        taskInfo:
+          name: git-clone-component
+      train-model-component:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-train-model-component
+        dependentTasks:
+        - dvc-pull-component
+        inputs:
+          artifacts:
+            project_input:
+              taskOutputArtifact:
+                outputArtifactKey: project_output
+                producerTask: dvc-pull-component
+          parameters:
+            model_type:
+              componentInputParameter: model_type
+        taskInfo:
+          name: train-model-component
+  inputDefinitions:
+    parameters:
+      branch:
+        defaultValue: kubeflow
+        description: 'Git branch to clone  '
+        isOptional: true
+        parameterType: STRING
+      model_type:
+        defaultValue: NeuralNetwork
+        description: Model to train (NeuralNetwork, CNN, RNN, LSTM)
+        isOptional: true
+        parameterType: STRING
+      repo_url:
+        defaultValue: https://github.com/zakmic/mlops_comparison.git
+        description: Git repository URL
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.7.0
