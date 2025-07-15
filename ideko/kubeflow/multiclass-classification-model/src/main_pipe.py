@@ -1,219 +1,344 @@
-#!/usr/bin/env python3
-"""
-Pipeline-friendly version of main.py for Kubeflow
-Simplified to work in containerized environments
-"""
+'''
+Pipeline-friendly script for model training
+Handles flat directory of ZIP files from LakeFS
+'''
 
 import os
 import sys
+import zipfile
 import logging
-import numpy as np
+import glob
 import pandas as pd
+import numpy as np
 from pathlib import Path
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, accuracy_score
-import pickle
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+# Set up basic logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def read_data(data_path, indicator_list):
-    """Read data from CSV files"""
-    logger.info(f"Reading data from {data_path}")
+def read_zip_files_flat(data_path, indicator_list):
+    """
+    Read data from flat directory of ZIP files
+    Infers labels from filenames or uses default labeling
+
+    Parameters:
+        data_path (str): path to directory containing ZIP files
+        indicator_list (list): list of indicators to read from files
+
+    Returns:
+        X: list of arrays containing the data
+        Y: list of labels
+    """
+    logger.info(f"Reading data from flat directory: {data_path}")
+    logger.info(f"Looking for indicators: {indicator_list}")
+
+    # Find all ZIP files
+    zip_files = glob.glob(os.path.join(data_path, "*.zip"))
+    logger.info(f"Found {len(zip_files)} ZIP files")
+
+    if len(zip_files) == 0:
+        logger.error("No ZIP files found in data directory")
+        return [], []
 
     X = []
     Y = []
 
-    # Look for CSV files in the data directory
-    data_path = Path(data_path)
-    csv_files = list(data_path.glob("*.csv"))
-
-    logger.info(f"Found {len(csv_files)} CSV files: {[f.name for f in csv_files]}")
-
-    if not csv_files:
-        raise FileNotFoundError(f"No CSV files found in {data_path}")
-
-    # For this simplified version, assume we have one main dataset
-    for csv_file in csv_files:
+    # Simple labeling strategy - you may need to adjust this based on your filename patterns
+    # For now, we'll use a simple approach
+    for i, zip_path in enumerate(zip_files):
         try:
-            df = pd.read_csv(csv_file)
-            logger.info(f"Loaded {csv_file.name} with shape {df.shape}")
+            filename = os.path.basename(zip_path)
+            logger.info(f"Processing file {i+1}/{len(zip_files)}: {filename}")
 
-            # Extract features (assuming numeric columns except last one is target)
-            if len(df.columns) > 1:
-                feature_cols = df.columns[:-1]  # All but last column
-                target_col = df.columns[-1]     # Last column as target
+            # Open ZIP file and read CSV
+            with zipfile.ZipFile(zip_path, 'r') as zip_file:
+                # Get the first (and presumably only) file in the ZIP
+                csv_filename = zip_file.namelist()[0]
 
-                # For time series data, we'll treat each row as a sample
-                for _, row in df.iterrows():
-                    X.append(row[feature_cols].values)
-                    Y.append(row[target_col])
+                # Read CSV data
+                with zip_file.open(csv_filename) as csv_file:
+                    df = pd.read_csv(csv_file, delimiter=";")
+
+                    # Check if required indicators exist
+                    available_indicators = [ind for ind in indicator_list if ind in df.columns]
+                    if not available_indicators:
+                        logger.warning(f"No required indicators found in {filename}, using first numeric column")
+                        # Use first numeric column if indicators not found
+                        numeric_cols = df.select_dtypes(include=[np.number]).columns
+                        if len(numeric_cols) > 0:
+                            available_indicators = [numeric_cols[0]]
+                        else:
+                            logger.warning(f"No numeric columns found in {filename}, skipping")
+                            continue
+
+                    # Extract data for available indicators
+                    data = df[available_indicators].to_numpy()
+                    X.append(data)
+
+                    # Simple labeling strategy - adjust as needed
+                    # For now, assign labels based on file index or filename patterns
+                    if "anomal" in filename.lower():
+                        if "electrical" in filename.lower():
+                            label = "electrical anomaly"
+                        elif "mechanical" in filename.lower():
+                            label = "mechanical anomaly"
+                        else:
+                            label = "anomaly"
+                    else:
+                        label = "not anomalous"
+
+                    Y.append(label)
+                    logger.info(f"Added data with shape {data.shape} and label '{label}'")
 
         except Exception as e:
-            logger.error(f"Error reading {csv_file}: {e}")
+            logger.error(f"Error processing {zip_path}: {e}")
             continue
 
-    if not X:
-        raise ValueError("No valid data found in CSV files")
-
-    logger.info(f"Loaded {len(X)} samples")
+    logger.info(f"Successfully loaded {len(X)} files")
     return X, Y
 
-def add_padding(X, indicator_list):
-    """Add padding to make all sequences the same length"""
+def add_padding_simple(X):
+    """
+    Simple padding function using numpy
+    """
     if not X:
         return np.array([])
 
-    # Convert to numpy arrays
-    X_arrays = [np.array(x) for x in X]
+    # Find maximum length
+    max_length = max(len(x) for x in X)
+    n_features = X[0].shape[1] if len(X) > 0 else 1
 
-    # Find max length
-    max_len = max(len(x) for x in X_arrays)
+    logger.info(f"Padding sequences to max length: {max_length}")
 
     # Pad sequences
     X_padded = []
-    for x in X_arrays:
-        if len(x) < max_len:
-            padding = np.zeros(max_len - len(x))
-            x_padded = np.concatenate([x, padding])
+    for x in X:
+        if len(x) < max_length:
+            # Pad with zeros
+            padding = np.zeros((max_length - len(x), n_features))
+            x_padded = np.vstack([x, padding])
         else:
             x_padded = x
         X_padded.append(x_padded)
 
     return np.array(X_padded)
 
-def encode_response_variable(Y):
-    """Encode response variable"""
+def encode_labels_simple(Y):
+    """
+    Simple label encoding
+    """
+    from sklearn.preprocessing import LabelEncoder
+
+    # Encode labels to integers
     encoder = LabelEncoder()
-    Y_encoded = encoder.fit_transform(Y)
+    y_encoded = encoder.fit_transform(Y)
 
-    # Convert to one-hot encoding
-    from sklearn.preprocessing import OneHotEncoder
-    onehot_encoder = OneHotEncoder(sparse_output=False)
-    Y_encoded = onehot_encoder.fit_transform(Y_encoded.reshape(-1, 1))
+    # One-hot encode
+    n_classes = len(set(Y))
+    y_onehot = np.eye(n_classes)[y_encoded]
 
-    return Y_encoded
+    logger.info(f"Encoded {len(Y)} labels into {n_classes} classes")
+    logger.info(f"Classes: {encoder.classes_}")
 
-def split_data(X, Y, test_size=0.2, random_state=42):
-    """Split data into train and test sets"""
-    return train_test_split(X, Y, test_size=test_size, random_state=random_state)
+    return y_onehot, encoder.classes_
 
-def train_simple_model(X_train, y_train):
-    """Train a simple RandomForest model"""
-    logger.info("Training RandomForest model...")
+def simple_neural_network(input_shape, n_classes):
+    """
+    Create a simple neural network for demonstration
+    """
+    try:
+        import tensorflow as tf
+        from tensorflow import keras
+        from tensorflow.keras import layers
 
-    # For this simplified version, flatten the data if needed
-    if len(X_train.shape) > 2:
-        X_train_flat = X_train.reshape(X_train.shape[0], -1)
-    else:
-        X_train_flat = X_train
+        model = keras.Sequential([
+            layers.Input(shape=input_shape),
+            layers.Flatten(),
+            layers.Dense(64, activation='relu'),
+            layers.Dense(32, activation='relu'),
+            layers.Dense(n_classes, activation='softmax')
+        ])
 
-    # Convert one-hot encoded y to single labels
-    if len(y_train.shape) > 1:
-        y_train_labels = np.argmax(y_train, axis=1)
-    else:
-        y_train_labels = y_train
+        model.compile(
+            optimizer='adam',
+            loss='categorical_crossentropy',
+            metrics=['accuracy']
+        )
 
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
-    model.fit(X_train_flat, y_train_labels)
+        logger.info("Created simple neural network")
+        logger.info(f"Model input shape: {input_shape}")
+        logger.info(f"Model output classes: {n_classes}")
 
-    return model
+        return model
 
-def evaluate_model(model, X_test, y_test):
-    """Evaluate the model"""
-    logger.info("Evaluating model...")
-
-    # Flatten test data if needed
-    if len(X_test.shape) > 2:
-        X_test_flat = X_test.reshape(X_test.shape[0], -1)
-    else:
-        X_test_flat = X_test
-
-    # Convert one-hot encoded y to single labels
-    if len(y_test.shape) > 1:
-        y_test_labels = np.argmax(y_test, axis=1)
-    else:
-        y_test_labels = y_test
-
-    y_pred = model.predict(X_test_flat)
-
-    accuracy = accuracy_score(y_test_labels, y_pred)
-    logger.info(f"Test Accuracy: {accuracy:.4f}")
-
-    logger.info("\nClassification Report:")
-    logger.info(classification_report(y_test_labels, y_pred))
-
-    return accuracy
+    except ImportError:
+        logger.error("TensorFlow/Keras not available, skipping model creation")
+        return None
 
 def main():
-    """Main pipeline function"""
+    """
+    Main pipeline function
+    """
     logger.info("Starting pipeline-friendly main...")
 
-    # Define paths
-    data_path = Path("data")  # Expect data in ./data directory
-    output_path = Path("output")
-    output_path.mkdir(exist_ok=True)
-
-    # Check if data directory exists
-    if not data_path.exists():
-        logger.error(f"Data directory {data_path} not found")
-        sys.exit(1)
-
-    # List of indicators (simplified)
-    indicator_list = ["f3"]  # Can be configured as needed
-
     try:
+        # Define paths
+        data_path = "data"  # This should contain the ZIP files from LakeFS
+        output_path = "output"
+
+        # Create output directory
+        os.makedirs(output_path, exist_ok=True)
+
+        # Check if data directory exists
+        if not os.path.exists(data_path):
+            logger.error(f"Data directory '{data_path}' not found")
+            return False
+
+        # List data directory contents
+        data_files = os.listdir(data_path)
+        logger.info(f"Data directory contains: {data_files}")
+
+        # Check for ZIP files
+        zip_files = [f for f in data_files if f.endswith('.zip')]
+        csv_files = [f for f in data_files if f.endswith('.csv')]
+
+        logger.info(f"Found {len(zip_files)} ZIP files: {zip_files}")
+        logger.info(f"Found {len(csv_files)} CSV files: {csv_files}")
+
+        if len(zip_files) == 0 and len(csv_files) == 0:
+            logger.error("No ZIP or CSV files found in data directory")
+            return False
+
+        # Define indicators to extract
+        indicator_list = ["f3"]  # Same as original code
+
         # Read data
-        X, Y = read_data(data_path, indicator_list)
-        logger.info(f"Data shape: X={len(X)}, Y={len(Y)}")
+        if len(zip_files) > 0:
+            logger.info("Processing ZIP files...")
+            X, Y = read_zip_files_flat(data_path, indicator_list)
+        else:
+            logger.info("Processing CSV files...")
+            # Add CSV processing logic if needed
+            X, Y = [], []
+
+        if len(X) == 0:
+            logger.error("No data loaded successfully")
+            return False
+
+        logger.info(f"Loaded {len(X)} samples")
 
         # Add padding
-        X_pad = add_padding(X, indicator_list)
-        logger.info(f"Padded X shape: {X_pad.shape}")
+        logger.info("Adding padding to sequences...")
+        X_padded = add_padding_simple(X)
 
-        # Encode response variable
-        Y_encoded = encode_response_variable(Y)
-        logger.info(f"Encoded Y shape: {Y_encoded.shape}")
+        if X_padded.size == 0:
+            logger.error("Padding failed")
+            return False
 
-        # Split data
-        X_train, X_test, y_train, y_test = split_data(X_pad, Y_encoded)
-        logger.info(f"Train shape: X={X_train.shape}, y={y_train.shape}")
-        logger.info(f"Test shape: X={X_test.shape}, y={y_test.shape}")
+        # Encode labels
+        logger.info("Encoding labels...")
+        Y_encoded, class_names = encode_labels_simple(Y)
 
-        # Train model
-        model = train_simple_model(X_train, y_train)
+        logger.info(f"Data shape after padding: {X_padded.shape}")
+        logger.info(f"Labels shape: {Y_encoded.shape}")
 
-        # Evaluate model
-        accuracy = evaluate_model(model, X_test, y_test)
+        # Simple train/test split
+        from sklearn.model_selection import train_test_split
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_padded, Y_encoded, test_size=0.2, random_state=42
+        )
 
-        # Save model
-        model_path = output_path / "model.pkl"
-        with open(model_path, 'wb') as f:
-            pickle.dump(model, f)
-        logger.info(f"Model saved to {model_path}")
+        logger.info(f"Training set: {X_train.shape}")
+        logger.info(f"Test set: {X_test.shape}")
 
-        # Save results
-        results = {
-            'accuracy': accuracy,
-            'n_samples': len(X),
-            'n_features': X_pad.shape[1] if len(X_pad.shape) > 1 else 1,
-            'n_classes': Y_encoded.shape[1] if len(Y_encoded.shape) > 1 else 1
-        }
+        # Create and train a simple model
+        input_shape = X_train.shape[1:]  # Remove batch dimension
+        n_classes = Y_encoded.shape[1]
 
-        results_path = output_path / "results.txt"
-        with open(results_path, 'w') as f:
-            for key, value in results.items():
-                f.write(f"{key}: {value}\n")
+        model = simple_neural_network(input_shape, n_classes)
 
-        logger.info(f"Results saved to {results_path}")
+        if model is not None:
+            logger.info("Training model...")
+
+            # Train for just a few epochs for demonstration
+            history = model.fit(
+                X_train, y_train,
+                validation_data=(X_test, y_test),
+                epochs=5,  # Short training for pipeline testing
+                batch_size=32,
+                verbose=1
+            )
+
+            # Evaluate model
+            train_loss, train_acc = model.evaluate(X_train, y_train, verbose=0)
+            test_loss, test_acc = model.evaluate(X_test, y_test, verbose=0)
+
+            logger.info(f"Training accuracy: {train_acc:.4f}")
+            logger.info(f"Test accuracy: {test_acc:.4f}")
+
+            # Save model
+            model_path = os.path.join(output_path, "simple_model.keras")
+            model.save(model_path)
+            logger.info(f"Model saved to: {model_path}")
+
+            # Save results summary
+            results = {
+                "train_accuracy": float(train_acc),
+                "test_accuracy": float(test_acc),
+                "train_loss": float(train_loss),
+                "test_loss": float(test_loss),
+                "n_samples": len(X),
+                "n_classes": n_classes,
+                "class_names": class_names.tolist(),
+                "input_shape": list(input_shape)
+            }
+
+            import json
+            with open(os.path.join(output_path, "results.json"), "w") as f:
+                json.dump(results, f, indent=2)
+
+            logger.info("Results saved to results.json")
+
+        # Create a simple summary file
+        summary = f"""
+Pipeline Execution Summary
+=========================
+
+Data Processing:
+- Loaded {len(X)} samples from {len(zip_files)} ZIP files
+- Data shape: {X_padded.shape}
+- Classes: {len(set(Y))} ({', '.join(set(Y))})
+
+Model Training:
+- Input shape: {input_shape}
+- Number of classes: {n_classes}
+- Training samples: {len(X_train)}
+- Test samples: {len(X_test)}
+
+Results:
+- Training accuracy: {train_acc:.4f} (if model trained)
+- Test accuracy: {test_acc:.4f} (if model trained)
+
+Output files created in '{output_path}' directory.
+"""
+
+        with open(os.path.join(output_path, "summary.txt"), "w") as f:
+            f.write(summary)
+
         logger.info("Pipeline completed successfully!")
+        logger.info(f"Check the '{output_path}' directory for results")
+
+        return True
 
     except Exception as e:
         logger.error(f"Pipeline failed: {e}")
-        sys.exit(1)
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
 
 if __name__ == "__main__":
-    main()
+    success = main()
+    if not success:
+        sys.exit(1)
+
+    print("Pipeline completed successfully!")
