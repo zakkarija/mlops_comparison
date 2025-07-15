@@ -325,8 +325,8 @@ Output files created in '{output_path}' directory.
         with open(os.path.join(output_path, "summary.txt"), "w") as f:
             f.write(summary)
 
-        logger.info("Pipeline completed successfully!")
-        logger.info(f"Check the '{output_path}' directory for results")
+        print("SUCCESS: Pipeline completed successfully!")
+        print(f"Check the '{output_path}' directory for results")
 
         return True
 
