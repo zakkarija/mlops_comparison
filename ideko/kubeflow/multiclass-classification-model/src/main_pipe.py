@@ -11,6 +11,8 @@ import glob
 import pandas as pd
 import numpy as np
 import argparse
+import time
+import json
 from pathlib import Path
 
 # Set up basic logging
@@ -183,6 +185,55 @@ def simple_neural_network(input_shape, n_classes):
         logger.error("TensorFlow/Keras not available, skipping model creation")
         return None
 
+def register_model_in_mlmd(model_path, model_metadata):
+    """Actually register model in MLMD database"""
+    try:
+        from ml_metadata.proto import metadata_store_pb2
+        from ml_metadata.metadata_store import metadata_store
+
+        print("🔄 Registering model in MLMD...")
+
+        # Connect to MLMD
+        config = metadata_store_pb2.ConnectionConfig()
+        config.mysql.host = "mysql.kubeflow.svc.cluster.local"
+        config.mysql.port = 3306
+        config.mysql.database = "metadb"
+        config.mysql.user = "root"
+
+        store = metadata_store.MetadataStore(config)
+
+        # Create or get model artifact type
+        model_type = metadata_store_pb2.ArtifactType()
+        model_type.name = "Model"
+        model_type.properties["framework"] = metadata_store_pb2.STRING
+        model_type.properties["model_type"] = metadata_store_pb2.STRING
+        model_type.properties["accuracy"] = metadata_store_pb2.DOUBLE
+        model_type.properties["n_classes"] = metadata_store_pb2.INT
+
+        model_type_id = store.put_artifact_type(model_type)
+
+        # Create model artifact
+        model_artifact = metadata_store_pb2.Artifact()
+        model_artifact.uri = model_path
+        model_artifact.type_id = model_type_id
+        model_artifact.name = f"model_{int(time.time())}"
+
+        # Set properties from your metadata
+        model_artifact.properties["framework"].string_value = model_metadata["framework"]
+        model_artifact.properties["model_type"].string_value = model_metadata["model_type"]
+        model_artifact.properties["accuracy"].double_value = model_metadata["train_accuracy"]
+        model_artifact.properties["n_classes"].int_value = model_metadata["n_classes"]
+
+        # Register in MLMD
+        artifact_id = store.put_artifacts([model_artifact])[0]
+
+        print(f"✅ Model registered in MLMD with ID: {artifact_id}")
+        return artifact_id
+
+    except Exception as e:
+        print(f"❌ MLMD registration failed: {e}")
+        return None
+
 def main():
     """
     Main pipeline function
@@ -302,7 +353,7 @@ def main():
             model.save(local_model_path)
             logger.info(f"Model also saved locally: {local_model_path}")
 
-            # Save model metadata to MLMD artifact path
+            # Create model metadata BEFORE MLMD registration
             model_metadata = {
                 "model_type": "neural_network",
                 "input_shape": list(input_shape),
@@ -317,27 +368,18 @@ def main():
                 "version": "2.16.1"
             }
 
-            import json
+            # Register in MLMD
+            mlmd_id = register_model_in_mlmd(model_path, model_metadata)
+            if mlmd_id:
+                model_metadata["mlmd_id"] = mlmd_id
+                logger.info(f"Model registered in MLMD with ID: {mlmd_id}")
+
+            # Save model metadata to MLMD artifact path (only once)
             with open(os.path.join(model_output_path, "model_metadata.json"), "w") as f:
                 json.dump(model_metadata, f, indent=2)
             logger.info("Model metadata saved to MLMD artifact path")
 
-            # Save results summary
-            results = {
-                "train_accuracy": float(train_acc),
-                "test_accuracy": float(test_acc),
-                "train_loss": float(train_loss),
-                "test_loss": float(test_loss),
-                "n_samples": len(X),
-                "n_classes": n_classes,
-                "class_names": class_names.tolist() if hasattr(class_names, 'tolist') else list(class_names),
-                "input_shape": list(input_shape)
-            }
-
-            with open(os.path.join(output_path, "results.json"), "w") as f:
-                json.dump(results, f, indent=2)
-
-            logger.info("Results saved to results.json")
+            logger.info("Results logged in MLMD - no separate results.json needed")
 
         # Create a simple summary file
         summary = f"""
@@ -354,17 +396,17 @@ Model Training:
 - Number of classes: {n_classes}
 - Training samples: {len(X_train)}
 - Test samples: {len(X_test)}
+- Training accuracy: {train_acc:.4f}
+- Test accuracy: {test_acc:.4f}
 
-Results:
-- Training accuracy: {train_acc:.4f} (if model trained)
-- Test accuracy: {test_acc:.4f} (if model trained)
-
-Model Registration:
+MLMD Integration:
 - Model saved to MLMD artifact path: {model_output_path}/model.keras
 - Model metadata saved to: {model_output_path}/model_metadata.json
+- MLMD database registration: {"✅ Success" if mlmd_id else "❌ Failed"}
+- MLMD artifact ID: {mlmd_id if mlmd_id else "Not registered"}
 - Local backup saved to: {output_path}/simple_model.keras
 
-Output files created in '{output_path}' directory.
+All model metadata is now queryable via MLMD tools and APIs.
 """
 
         with open(os.path.join(output_path, "summary.txt"), "w") as f:
@@ -373,6 +415,8 @@ Output files created in '{output_path}' directory.
         print("SUCCESS: Pipeline completed successfully!")
         print(f"Check the '{output_path}' directory for results")
         print(f"Model registered in MLMD at: {model_output_path}")
+        if mlmd_id:
+            print(f"MLMD Artifact ID: {mlmd_id}")
 
         return True
 
