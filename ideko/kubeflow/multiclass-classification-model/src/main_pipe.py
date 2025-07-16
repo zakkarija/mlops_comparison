@@ -182,9 +182,9 @@ def main():
     logger.info("Starting pipeline-friendly main...")
 
     try:
-        # Define paths
-        data_path = "data"  # This should contain the ZIP files from LakeFS
-        output_path = "output"
+        # Define paths (relative to src directory)
+        data_path = "../data"  # Data is one level up from src
+        output_path = "../output"  # Output is one level up from src
 
         # Create output directory
         os.makedirs(output_path, exist_ok=True)
