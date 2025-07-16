@@ -10,11 +10,19 @@ import logging
 import glob
 import pandas as pd
 import numpy as np
+import argparse
 from pathlib import Path
 
 # Set up basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+def parse_args():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='ML Pipeline for multiclass classification')
+    parser.add_argument('--model_output_path', type=str, default='../output',
+                        help='Path to save the trained model (for MLMD registration)')
+    return parser.parse_args()
 
 def read_zip_files_flat(data_path, indicator_list):
     """
@@ -179,15 +187,23 @@ def main():
     """
     Main pipeline function
     """
+    # Parse command line arguments
+    args = parse_args()
+
     logger.info("Starting pipeline-friendly main...")
+    logger.info(f"Model output path: {args.model_output_path}")
 
     try:
         # Define paths (relative to src directory)
         data_path = "../data"  # Data is one level up from src
         output_path = "../output"  # Output is one level up from src
 
-        # Create output directory
+        # Use the model output path from arguments (for MLMD registration)
+        model_output_path = args.model_output_path
+
+        # Create output directories
         os.makedirs(output_path, exist_ok=True)
+        os.makedirs(model_output_path, exist_ok=True)
 
         # Check if data directory exists
         if not os.path.exists(data_path):
@@ -276,10 +292,35 @@ def main():
             logger.info(f"Training accuracy: {train_acc:.4f}")
             logger.info(f"Test accuracy: {test_acc:.4f}")
 
-            # Save model
-            model_path = os.path.join(output_path, "simple_model.keras")
+            # Save model to MLMD artifact path
+            model_path = os.path.join(model_output_path, "model.keras")
             model.save(model_path)
-            logger.info(f"Model saved to: {model_path}")
+            logger.info(f"Model saved to MLMD artifact path: {model_path}")
+
+            # Also save to local output for backward compatibility
+            local_model_path = os.path.join(output_path, "simple_model.keras")
+            model.save(local_model_path)
+            logger.info(f"Model also saved locally: {local_model_path}")
+
+            # Save model metadata to MLMD artifact path
+            model_metadata = {
+                "model_type": "neural_network",
+                "input_shape": list(input_shape),
+                "n_classes": n_classes,
+                "class_names": class_names.tolist() if hasattr(class_names, 'tolist') else list(class_names),
+                "train_accuracy": float(train_acc),
+                "test_accuracy": float(test_acc),
+                "train_loss": float(train_loss),
+                "test_loss": float(test_loss),
+                "n_samples": len(X),
+                "framework": "tensorflow",
+                "version": "2.16.1"
+            }
+
+            import json
+            with open(os.path.join(model_output_path, "model_metadata.json"), "w") as f:
+                json.dump(model_metadata, f, indent=2)
+            logger.info("Model metadata saved to MLMD artifact path")
 
             # Save results summary
             results = {
@@ -289,11 +330,10 @@ def main():
                 "test_loss": float(test_loss),
                 "n_samples": len(X),
                 "n_classes": n_classes,
-                "class_names": class_names.tolist(),
+                "class_names": class_names.tolist() if hasattr(class_names, 'tolist') else list(class_names),
                 "input_shape": list(input_shape)
             }
 
-            import json
             with open(os.path.join(output_path, "results.json"), "w") as f:
                 json.dump(results, f, indent=2)
 
@@ -319,6 +359,11 @@ Results:
 - Training accuracy: {train_acc:.4f} (if model trained)
 - Test accuracy: {test_acc:.4f} (if model trained)
 
+Model Registration:
+- Model saved to MLMD artifact path: {model_output_path}/model.keras
+- Model metadata saved to: {model_output_path}/model_metadata.json
+- Local backup saved to: {output_path}/simple_model.keras
+
 Output files created in '{output_path}' directory.
 """
 
@@ -327,6 +372,7 @@ Output files created in '{output_path}' directory.
 
         print("SUCCESS: Pipeline completed successfully!")
         print(f"Check the '{output_path}' directory for results")
+        print(f"Model registered in MLMD at: {model_output_path}")
 
         return True
 
