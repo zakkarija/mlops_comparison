@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 # ─────────── utils ───────────
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--model_output_path", required=True,
+    p.add_argument("--model_path", required=True,
                    help="Directory where the trained model and metadata must be written")
     return p.parse_args()
 
@@ -223,7 +223,7 @@ def register_model_in_mlmd(model_uri: str, model_metadata: dict):
 # ─────────── main ───────────
 def main():
     args = parse_args()
-    model_output = Path(args.model_output_path)
+    model_output = Path(args.model_path)
     model_output.mkdir(parents=True, exist_ok=True)
 
     # Paths relative to this script:
@@ -253,7 +253,7 @@ def main():
     test_acc  = float(history.history["val_accuracy"][-1])
 
     # save model
-    model_path = os.path.join(model_output_path, "model.keras")
+    model_path = os.path.join(model_path, "model.keras")
     model.save(model_path)
     logger.info(f"Model saved to MLMD artifact path: {model_path}")
     model.save(os.path.join(model_output, "saved_model"), save_format='tf')
