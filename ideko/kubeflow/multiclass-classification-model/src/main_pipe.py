@@ -1,30 +1,21 @@
-'''
-Pipeline-friendly script for model training
-Handles flat directory of ZIP files from LakeFS
-'''
-
-import os
-import sys
-import zipfile
-import logging
-import glob
-import pandas as pd
-import numpy as np
-import argparse
-import time
-import json
+"""
+Pipeline‑friendly model‑training script.
+Reads flat ZIPs, trains toy NN, writes Keras model + metadata, registers in local (SQLite) MLMD.
+"""
+import os, sys, logging, argparse, glob, zipfile, json, time
 from pathlib import Path
+import pandas as pd, numpy as np
 
-# Set up basic logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+# ─────────── utils ───────────
 def parse_args():
-    """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='ML Pipeline for multiclass classification')
-    parser.add_argument('--model_output_path', type=str, default='../output',
-                        help='Path to save the trained model (for MLMD registration)')
-    return parser.parse_args()
+    p = argparse.ArgumentParser()
+    p.add_argument("--model_output_path", required=True,
+                   help="Directory where the trained model and metadata must be written")
+    return p.parse_args()
 
 def read_zip_files_flat(data_path, indicator_list):
     """
@@ -185,246 +176,106 @@ def simple_neural_network(input_shape, n_classes):
         logger.error("TensorFlow/Keras not available, skipping model creation")
         return None
 
-def register_model_in_mlmd(model_path, model_metadata):
-    """Actually register model in MLMD database"""
+# ---------- MLMD helper  (SQLite, no MySQL) ----------
+def register_model_in_mlmd(model_uri: str, model_metadata: dict):
+    """Register a model artifact in an on‑disk SQLite MLMD store."""
     try:
         from ml_metadata.metadata_store import metadata_store
         from ml_metadata.proto import metadata_store_pb2
 
-        print("🔄 Registering model in MLMD...")
+        logger.info("🔄  Registering model in local SQLite MLMD…")
 
-        # Connect to MLMD
-        config = metadata_store_pb2.ConnectionConfig()
-        config.sqlite.filename_uri = os.path.join(model_output_path, "metadata.db")
-        store = metadata_store.MetadataStore(config)
+        cfg = metadata_store_pb2.ConnectionConfig()
+        cfg.sqlite.filename_uri = str(Path(model_uri).parent / "metadata.db")
+        store = metadata_store.MetadataStore(cfg)
 
-        # Create or get model artifact type
-        model_type = metadata_store_pb2.ArtifactType()
-        model_type.name = "Model"
-        model_type.properties["framework"] = metadata_store_pb2.STRING
-        model_type.properties["model_type"] = metadata_store_pb2.STRING
-        model_type.properties["accuracy"] = metadata_store_pb2.DOUBLE
-        model_type.properties["n_classes"] = metadata_store_pb2.INT
+        # declare (or reuse) the ArtifactType
+        model_type = metadata_store_pb2.ArtifactType(
+            name="Model",
+            properties={
+                "framework": metadata_store_pb2.STRING,
+                "model_type": metadata_store_pb2.STRING,
+                "accuracy":   metadata_store_pb2.DOUBLE,
+                "n_classes":  metadata_store_pb2.INT,
+            }
+        )
+        type_id = store.put_artifact_type(model_type)
 
-        model_type_id = store.put_artifact_type(model_type)
-
-        # Create model artifact
-        model_artifact = metadata_store_pb2.Artifact()
-        model_artifact.uri = model_path
-        model_artifact.type_id = model_type_id
-        model_artifact.name = f"model_{int(time.time())}"
-
-        # Set properties from your metadata
-        model_artifact.properties["framework"].string_value = model_metadata["framework"]
-        model_artifact.properties["model_type"].string_value = model_metadata["model_type"]
-        model_artifact.properties["accuracy"].double_value = model_metadata["train_accuracy"]
-        model_artifact.properties["n_classes"].int_value = model_metadata["n_classes"]
-
-        # Register in MLMD
-        artifact_id = store.put_artifacts([model_artifact])[0]
-
-        print(f"✅ Model registered in MLMD with ID: {artifact_id}")
+        art = metadata_store_pb2.Artifact(
+            uri=model_uri,
+            type_id=type_id,
+            properties={
+                "framework":  metadata_store_pb2.Value(string_value=model_metadata["framework"]),
+                "model_type": metadata_store_pb2.Value(string_value=model_metadata["model_type"]),
+                "accuracy":   metadata_store_pb2.Value(double_value=model_metadata["train_accuracy"]),
+                "n_classes":  metadata_store_pb2.Value(int_value=model_metadata["n_classes"]),
+            }
+        )
+        artifact_id = store.put_artifacts([art])[0]
+        logger.info(f"✅  Model registered in MLMD (ID={artifact_id})")
         return artifact_id
-
     except Exception as e:
-        print(f"❌ MLMD registration failed: {e}")
+        logger.warning(f"MLMD registration failed: {e}")
         return None
 
+# ─────────── main ───────────
 def main():
-    """
-    Main pipeline function
-    """
-    # Parse command line arguments
     args = parse_args()
+    model_output = Path(args.model_output_path)
+    model_output.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Starting pipeline-friendly main...")
-    logger.info(f"Model output path: {args.model_output_path}")
+    # Paths relative to this script:
+    data_path   = Path(__file__).parent / "data"
+    local_out   = Path(__file__).parent.parent / "output"
+    local_out.mkdir(exist_ok=True)
 
-    try:
-        # Define paths (relative to src directory)
-        data_path = "data"  # Data is one level up from src
-        output_path = "../output"  # Output is one level up from src
-
-        # Use the model output path from arguments (for MLMD registration)
-        model_output_path = args.model_output_path
-
-        # Create output directories
-        os.makedirs(output_path, exist_ok=True)
-        os.makedirs(model_output_path, exist_ok=True)
-
-        # Check if data directory exists
-        if not os.path.exists(data_path):
-            logger.error(f"Data directory '{data_path}' not found")
-            return False
-
-        # List data directory contents
-        data_files = os.listdir(data_path)
-        logger.info(f"Data directory contains: {data_files}")
-
-        # Check for ZIP files
-        zip_files = [f for f in data_files if f.endswith('.zip')]
-        csv_files = [f for f in data_files if f.endswith('.csv')]
-
-        logger.info(f"Found {len(zip_files)} ZIP files: {zip_files}")
-        logger.info(f"Found {len(csv_files)} CSV files: {csv_files}")
-
-        if len(zip_files) == 0 and len(csv_files) == 0:
-            logger.error("No ZIP or CSV files found in data directory")
-            return False
-
-        # Define indicators to extract
-        indicator_list = ["f3"]  # Same as original code
-
-        # Read data
-        if len(zip_files) > 0:
-            logger.info("Processing ZIP files...")
-            X, Y = read_zip_files_flat(data_path, indicator_list)
-        else:
-            logger.info("Processing CSV files...")
-            # Add CSV processing logic if needed
-            X, Y = [], []
-
-        if len(X) == 0:
-            logger.error("No data loaded successfully")
-            return False
-
-        logger.info(f"Loaded {len(X)} samples")
-
-        # Add padding
-        logger.info("Adding padding to sequences...")
-        X_padded = add_padding_simple(X)
-
-        if X_padded.size == 0:
-            logger.error("Padding failed")
-            return False
-
-        # Encode labels
-        logger.info("Encoding labels...")
-        Y_encoded, class_names = encode_labels_simple(Y)
-
-        logger.info(f"Data shape after padding: {X_padded.shape}")
-        logger.info(f"Labels shape: {Y_encoded.shape}")
-
-        # Simple train/test split
-        from sklearn.model_selection import train_test_split
-        X_train, X_test, y_train, y_test = train_test_split(
-            X_padded, Y_encoded, test_size=0.2, random_state=42
-        )
-
-        logger.info(f"Training set: {X_train.shape}")
-        logger.info(f"Test set: {X_test.shape}")
-
-        # Create and train a simple model
-        input_shape = X_train.shape[1:]  # Remove batch dimension
-        n_classes = Y_encoded.shape[1]
-
-        model = simple_neural_network(input_shape, n_classes)
-
-        if model is not None:
-            logger.info("Training model...")
-
-            # Train for just a few epochs for demonstration
-            history = model.fit(
-                X_train, y_train,
-                validation_data=(X_test, y_test),
-                epochs=5,  # Short training for pipeline testing
-                batch_size=32,
-                verbose=1
-            )
-
-            # Evaluate model
-            train_loss, train_acc = model.evaluate(X_train, y_train, verbose=0)
-            test_loss, test_acc = model.evaluate(X_test, y_test, verbose=0)
-
-            logger.info(f"Training accuracy: {train_acc:.4f}")
-            logger.info(f"Test accuracy: {test_acc:.4f}")
-
-            # Save model to MLMD artifact path
-            model_path = os.path.join(model_output_path, "model.keras")
-            model.save(model_path)
-            logger.info(f"Model saved to MLMD artifact path: {model_path}")
-
-            # Also save to local output for backward compatibility
-            local_model_path = os.path.join(output_path, "simple_model.keras")
-            model.save(local_model_path)
-            logger.info(f"Model also saved locally: {local_model_path}")
-
-            # Create model metadata BEFORE MLMD registration
-            model_metadata = {
-                "model_type": "neural_network",
-                "input_shape": list(input_shape),
-                "n_classes": n_classes,
-                "class_names": class_names.tolist() if hasattr(class_names, 'tolist') else list(class_names),
-                "train_accuracy": float(train_acc),
-                "test_accuracy": float(test_acc),
-                "train_loss": float(train_loss),
-                "test_loss": float(test_loss),
-                "n_samples": len(X),
-                "framework": "tensorflow",
-                "version": "2.16.1"
-            }
-
-            # Register in MLMD
-            mlmd_id = register_model_in_mlmd(model_path, model_metadata)
-            if mlmd_id:
-                model_metadata["mlmd_id"] = mlmd_id
-                logger.info(f"Model registered in MLMD with ID: {mlmd_id}")
-
-            # Save model metadata to MLMD artifact path (only once)
-            with open(os.path.join(model_output_path, "model_metadata.json"), "w") as f:
-                json.dump(model_metadata, f, indent=2)
-            logger.info("Model metadata saved to MLMD artifact path")
-
-            logger.info("Results logged in MLMD - no separate results.json needed")
-
-        # Create a simple summary file
-        summary = f"""
-Pipeline Execution Summary
-=========================
-
-Data Processing:
-- Loaded {len(X)} samples from {len(zip_files)} ZIP files
-- Data shape: {X_padded.shape}
-- Classes: {len(set(Y))} ({', '.join(set(Y))})
-
-Model Training:
-- Input shape: {input_shape}
-- Number of classes: {n_classes}
-- Training samples: {len(X_train)}
-- Test samples: {len(X_test)}
-- Training accuracy: {train_acc:.4f}
-- Test accuracy: {test_acc:.4f}
-
-MLMD Integration:
-- Model saved to MLMD artifact path: {model_output_path}/model.keras
-- Model metadata saved to: {model_output_path}/model_metadata.json
-- MLMD database registration: {"✅ Success" if mlmd_id else "❌ Failed"}
-- MLMD artifact ID: {mlmd_id if mlmd_id else "Not registered"}
-- Local backup saved to: {output_path}/simple_model.keras
-
-All model metadata is now queryable via MLMD tools and APIs.
-"""
-
-        with open(os.path.join(output_path, "summary.txt"), "w") as f:
-            f.write(summary)
-
-        print("SUCCESS: Pipeline completed successfully!")
-        print(f"Check the '{output_path}' directory for results")
-        print(f"Model registered in MLMD at: {model_output_path}")
-        if mlmd_id:
-            print(f"MLMD Artifact ID: {mlmd_id}")
-
-        return True
-
-    except Exception as e:
-        logger.error(f"Pipeline failed: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+    # read data
+    X, Y = read_zip_files_flat(data_path, ["f3"])
+    if not X:
+        logger.error("No data found, aborting.")
         return False
 
-if __name__ == "__main__":
-    success = main()
-    if not success:
-        sys.exit(1)
+    X_pad   = add_padding_simple(X)
+    Y_onehot, class_names = encode_labels_simple(Y)
 
-    print("Pipeline completed successfully!")
+    # simple split
+    from sklearn.model_selection import train_test_split
+    X_tr, X_te, y_tr, y_te = train_test_split(X_pad, Y_onehot, test_size=0.2, random_state=42)
+
+    # train toy model
+    model = simple_neural_network(X_tr.shape[1:], Y_onehot.shape[1])
+    history = model.fit(X_tr, y_tr, epochs=5, batch_size=32,
+                        validation_data=(X_te, y_te), verbose=1)
+
+    train_acc = float(history.history["accuracy"][-1])
+    test_acc  = float(history.history["val_accuracy"][-1])
+
+    # save model
+    keras_path = model_output / "model.keras"
+    model.save(keras_path)
+    model.save(local_out / "simple_model.keras")
+
+    # metadata
+    metadata = {
+        "framework": "tensorflow",
+        "model_type": "neural_network",
+        "n_classes": Y_onehot.shape[1],
+        "train_accuracy": train_acc,
+        "test_accuracy": test_acc,
+        "class_names": list(class_names),
+        "timestamp": int(time.time())
+    }
+    (model_output / "model_metadata.json").write_text(json.dumps(metadata, indent=2))
+
+    # MLMD (SQLite)
+    mlmd_id = register_model_in_mlmd(str(keras_path), metadata)
+    if mlmd_id:
+        metadata["mlmd_id"] = mlmd_id
+
+    logger.info("Pipeline completed OK")
+    return True
+
+if __name__ == "__main__":
+    ok = main()
+    if not ok:
+        sys.exit(1)
