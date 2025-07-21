@@ -255,7 +255,11 @@ def main():
     model.save(keras_path)
     model.save(local_out / "simple_model.keras")
 
-    # No SavedModel for now - keeping it simple
+    # Save in proper SavedModel format for KServe TensorFlow serving
+    import tensorflow as tf
+    savedmodel_path = model_output / "saved_model" / "1"  # Version 1 directory
+    savedmodel_path.mkdir(parents=True, exist_ok=True)
+    tf.saved_model.save(model, str(savedmodel_path))
 
     # metadata
     metadata = {
