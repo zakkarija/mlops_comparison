@@ -218,6 +218,8 @@ def register_model_in_mlmd(model_uri: str, model_metadata: dict):
         logger.warning(f"MLMD registration failed: {e}")
         return None
 
+
+
 # ─────────── main ───────────
 def main():
     args = parse_args()
@@ -254,6 +256,7 @@ def main():
     keras_path = model_output / "model.keras"
     model.save(keras_path)
     model.save(local_out / "simple_model.keras")
+    model.save(os.path.join(model_output_path, "saved_model"), save_format='tf')
 
     # metadata
     metadata = {
