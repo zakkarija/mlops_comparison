@@ -256,7 +256,7 @@ def main():
     model_path = os.path.join(model_output_path, "model.keras")
     model.save(model_path)
     logger.info(f"Model saved to MLMD artifact path: {model_path}")
-    model.save(os.path.join(model_output_path, "saved_model"), save_format='tf')
+    model.save(os.path.join(model_output, "saved_model"), save_format='tf')
     local_model_path = os.path.join(output_path, "simple_model.keras")
     model.save(local_model_path)
     logger.info(f"Model also saved locally: {local_model_path}")
