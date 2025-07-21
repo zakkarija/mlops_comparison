@@ -188,18 +188,14 @@ def simple_neural_network(input_shape, n_classes):
 def register_model_in_mlmd(model_path, model_metadata):
     """Actually register model in MLMD database"""
     try:
-        from ml_metadata.proto import metadata_store_pb2
         from ml_metadata.metadata_store import metadata_store
+        from ml_metadata.proto import metadata_store_pb2
 
         print("🔄 Registering model in MLMD...")
 
         # Connect to MLMD
         config = metadata_store_pb2.ConnectionConfig()
-        config.mysql.host = "mysql.kubeflow.svc.cluster.local"
-        config.mysql.port = 3306
-        config.mysql.database = "metadb"
-        config.mysql.user = "root"
-
+        config.sqlite.filename_uri = os.path.join(model_output_path, "metadata.db")
         store = metadata_store.MetadataStore(config)
 
         # Create or get model artifact type
@@ -246,7 +242,7 @@ def main():
 
     try:
         # Define paths (relative to src directory)
-        data_path = "../data"  # Data is one level up from src
+        data_path = "data"  # Data is one level up from src
         output_path = "../output"  # Output is one level up from src
 
         # Use the model output path from arguments (for MLMD registration)
