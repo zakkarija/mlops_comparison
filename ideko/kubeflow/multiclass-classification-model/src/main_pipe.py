@@ -255,8 +255,9 @@ def main():
     model.save(keras_path)
     model.save(local_out / "simple_model.keras")
 
-    # Save in SavedModel format for KServe
-    model.save(model_output / "saved_model", save_format='tf')
+    # Save in SavedModel format for KServe (Keras 3 compatible)
+    import tensorflow as tf
+    tf.saved_model.save(model, str(model_output / "saved_model"))
 
     # metadata
     metadata = {
