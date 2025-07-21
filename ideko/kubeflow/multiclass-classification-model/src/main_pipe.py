@@ -253,10 +253,13 @@ def main():
     test_acc  = float(history.history["val_accuracy"][-1])
 
     # save model
-    keras_path = model_output / "model.keras"
-    model.save(keras_path)
-    model.save(local_out / "simple_model.keras")
+    model_path = os.path.join(model_output_path, "model.keras")
+    model.save(model_path)
+    logger.info(f"Model saved to MLMD artifact path: {model_path}")
     model.save(os.path.join(model_output_path, "saved_model"), save_format='tf')
+    local_model_path = os.path.join(output_path, "simple_model.keras")
+    model.save(local_model_path)
+    logger.info(f"Model also saved locally: {local_model_path}")
 
     # metadata
     metadata = {
