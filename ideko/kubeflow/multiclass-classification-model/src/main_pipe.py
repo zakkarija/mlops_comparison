@@ -183,7 +183,7 @@ def register_model_in_mlmd(model_uri: str, model_metadata: dict):
         from ml_metadata.metadata_store import metadata_store
         from ml_metadata.proto import metadata_store_pb2
 
-        logger.info("🔄  Registering model in local SQLite MLMD…")
+        logger.info("Registering model in local SQLite MLMD...")
 
         cfg = metadata_store_pb2.ConnectionConfig()
         cfg.sqlite.filename_uri = str(Path(model_uri).parent / "metadata.db")
@@ -212,13 +212,11 @@ def register_model_in_mlmd(model_uri: str, model_metadata: dict):
             }
         )
         artifact_id = store.put_artifacts([art])[0]
-        logger.info(f"✅  Model registered in MLMD (ID={artifact_id})")
+        logger.info(f"Model registered in MLMD (ID={artifact_id})")
         return artifact_id
     except Exception as e:
         logger.warning(f"MLMD registration failed: {e}")
         return None
-
-
 
 # ─────────── main ───────────
 def main():
@@ -253,13 +251,12 @@ def main():
     test_acc  = float(history.history["val_accuracy"][-1])
 
     # save model
-    model_path = os.path.join(model_path, "model.keras")
-    model.save(model_path)
-    logger.info(f"Model saved to MLMD artifact path: {model_path}")
-    model.save(os.path.join(model_output, "saved_model"), save_format='tf')
-    local_model_path = os.path.join(output_path, "simple_model.keras")
-    model.save(local_model_path)
-    logger.info(f"Model also saved locally: {local_model_path}")
+    keras_path = model_output / "model.keras"
+    model.save(keras_path)
+    model.save(local_out / "simple_model.keras")
+
+    # Save in SavedModel format for KServe
+    model.save(model_output / "saved_model", save_format='tf')
 
     # metadata
     metadata = {
